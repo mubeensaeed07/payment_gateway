@@ -15,6 +15,11 @@ return Application::configure(basePath: dirname(__DIR__))
             'role' => \App\Http\Middleware\CheckRole::class,
             'prevent.back' => \App\Http\Middleware\PreventBackHistory::class,
         ]);
+        
+        // Exclude API routes from CSRF verification
+        $middleware->validateCsrfTokens(except: [
+            'api/bill/*',
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

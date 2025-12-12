@@ -146,6 +146,9 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
             Route::get('/paid-invoices', [\App\Http\Controllers\Admin\ReportsController::class, 'paidInvoices'])->name('paid-invoices');
             Route::get('/all-invoices', [\App\Http\Controllers\Admin\ReportsController::class, 'allInvoices'])->name('all-invoices');
         });
+        
+        // Tools routes
+        Route::get('/tools', [\App\Http\Controllers\Admin\ToolsController::class, 'index'])->name('tools.index');
     });
 
     // Reseller routes
@@ -162,4 +165,10 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
         request()->session()->regenerateToken();
         return redirect()->route('login')->with('success', 'You have been logged out successfully.');
     })->name('logout');
+});
+
+// API routes (no authentication required for external access)
+Route::prefix('api')->name('api.')->group(function () {
+    Route::post('/bill/inquiry', [\App\Http\Controllers\Api\BillApiController::class, 'inquiry'])->name('bill.inquiry');
+    Route::post('/bill/payment', [\App\Http\Controllers\Api\BillApiController::class, 'payment'])->name('bill.payment');
 });

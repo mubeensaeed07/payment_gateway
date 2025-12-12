@@ -53,6 +53,12 @@
                             <li><a href="{{ route('admin.reports.all-invoices') }}">Invoices</a></li>
                         </ul>
                     </li>
+                    <li>
+                        <a href="{{ route('admin.tools.index') }}" class="ai-icon" aria-expanded="false">
+                            <i class="flaticon-381-settings"></i>
+                            <span class="nav-text">Tools</span>
+                        </a>
+                    </li>
                 @else
                     <li>
                         <a href="{{ route('reseller.dashboard') }}" class="ai-icon" aria-expanded="false">
