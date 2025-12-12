@@ -215,7 +215,7 @@
             loadingDiv.show();
             
             $.ajax({
-                url: '{{ route("admin.api.bill.inquiry") }}',
+                url: '{{ route("api.bill.inquiry") }}',
                 method: 'POST',
                 data: {
                     prefix: $('#inquiry_prefix').val(),
@@ -250,7 +250,7 @@
             loadingDiv.show();
             
             $.ajax({
-                url: '{{ route("admin.api.bill.payment") }}',
+                url: '{{ route("api.bill.payment") }}',
                 method: 'POST',
                 data: {
                     invoice_number: $('#payment_invoice_number').val(),
