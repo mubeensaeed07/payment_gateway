@@ -169,6 +169,9 @@
                                                             <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#editPrefixModal{{ $user->id }}">
                                                                 Edit Prefix
                                                             </button>
+                                                            <button type="button" class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#manageSlabsModal{{ $user->id }}">
+                                                                Manage Slabs
+                                                            </button>
                                                             <form action="{{ route('superadmin.users.delete', $user->id) }}" method="POST" onsubmit="return confirm('Are you sure you want to delete this admin?')">
                                                                 @csrf
                                                                 @method('DELETE')
@@ -201,6 +204,34 @@
                                                                     <button type="submit" class="btn btn-primary">Update Prefix</button>
                                                                 </div>
                                                             </form>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <!-- Manage Slabs Modal -->
+                                                <div class="modal fade" id="manageSlabsModal{{ $user->id }}" tabindex="-1" aria-labelledby="manageSlabsModalLabel{{ $user->id }}" aria-hidden="true">
+                                                    <div class="modal-dialog modal-lg">
+                                                        <div class="modal-content">
+                                                            <div class="modal-header">
+                                                                <h5 class="modal-title" id="manageSlabsModalLabel{{ $user->id }}">Manage Slabs for {{ $user->name }}</h5>
+                                                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                            </div>
+                                                            <div class="modal-body">
+                                                                <form id="slabsForm{{ $user->id }}">
+                                                                    <div id="slabsContainer{{ $user->id }}">
+                                                                        <!-- Slabs will be loaded here via JavaScript -->
+                                                                    </div>
+                                                                    <div class="mt-3">
+                                                                        <button type="button" class="btn btn-sm btn-success" onclick="addSlab({{ $user->id }})">
+                                                                            <i class="fa fa-plus"></i> Add Slab
+                                                                        </button>
+                                                                    </div>
+                                                                </form>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                                <button type="button" class="btn btn-primary" onclick="saveSlabs({{ $user->id }})">Save Slabs</button>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -250,6 +281,240 @@
     <!-- Script For Custom JS -->
     <script src="/assets/js/deznav-init.js"></script>
     <script src="/assets/js/custom.js"></script>
+    
+    <script>
+        // Load slabs when modal is opened
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add event listener for all manage slabs modals
+            @foreach($users as $user)
+            const manageSlabsModal{{ $user->id }} = document.getElementById('manageSlabsModal{{ $user->id }}');
+            if (manageSlabsModal{{ $user->id }}) {
+                manageSlabsModal{{ $user->id }}.addEventListener('show.bs.modal', function() {
+                    loadSlabs({{ $user->id }});
+                });
+            }
+            @endforeach
+        });
+
+        function loadSlabs(adminId) {
+            fetch(`{{ url('/superadmin/admins') }}/${adminId}/slabs`, {
+                method: 'GET',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById(`slabsContainer${adminId}`);
+                container.innerHTML = '';
+                
+                if (data.slabs && data.slabs.length > 0) {
+                    data.slabs.forEach(slab => {
+                        addSlabRow(adminId, slab);
+                    });
+                } else {
+                    // Add default 5 slabs
+                    for (let i = 1; i <= 5; i++) {
+                        addSlabRow(adminId, {
+                            slab_number: i,
+                            from_amount: (i - 1) * 10000,
+                            to_amount: i === 5 ? null : i * 10000,
+                            charge: 0
+                        });
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error loading slabs:', error);
+                // Add default 5 slabs on error
+                const container = document.getElementById(`slabsContainer${adminId}`);
+                container.innerHTML = '';
+                for (let i = 1; i <= 5; i++) {
+                    addSlabRow(adminId, {
+                        slab_number: i,
+                        from_amount: (i - 1) * 10000,
+                        to_amount: i === 5 ? null : i * 10000,
+                        charge: 0
+                    });
+                }
+            });
+        }
+
+        function addSlab(adminId) {
+            const container = document.getElementById(`slabsContainer${adminId}`);
+            const existingSlabs = container.querySelectorAll('.slab-row').length;
+            
+            if (existingSlabs >= 6) {
+                alert('Maximum 6 slabs allowed');
+                return;
+            }
+            
+            const slabNumber = existingSlabs + 1;
+            const lastSlab = container.querySelector('.slab-row:last-child');
+            let fromAmount = 0;
+            
+            if (lastSlab) {
+                const lastToAmount = parseFloat(lastSlab.querySelector('input[name*="[to_amount]"]').value) || 0;
+                fromAmount = lastToAmount + 0.01;
+            }
+            
+            addSlabRow(adminId, {
+                slab_number: slabNumber,
+                from_amount: fromAmount,
+                to_amount: null,
+                charge: 0
+            });
+        }
+
+        function addSlabRow(adminId, slab) {
+            const container = document.getElementById(`slabsContainer${adminId}`);
+            const existingSlabs = container.querySelectorAll('.slab-row').length;
+            const slabIndex = existingSlabs;
+            
+            const row = document.createElement('div');
+            row.className = 'slab-row mb-3 p-3 border rounded';
+            row.innerHTML = `
+                <div class="row align-items-end">
+                    <div class="col-md-2">
+                        <label class="form-label">Slab ${slab.slab_number}</label>
+                        <input type="hidden" name="slabs[${slabIndex}][slab_number]" value="${slab.slab_number}">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">From Amount</label>
+                        <input type="number" name="slabs[${slabIndex}][from_amount]" class="form-control" step="0.01" min="0" value="${slab.from_amount || 0}" required>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">To Amount <small class="text-muted">(Leave empty for last slab)</small></label>
+                        <input type="number" name="slabs[${slabIndex}][to_amount]" class="form-control" step="0.01" min="0" value="${slab.to_amount || ''}" ${slab.to_amount === null ? '' : ''}>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Charge</label>
+                        <input type="number" name="slabs[${slabIndex}][charge]" class="form-control" step="0.01" min="0" value="${slab.charge || 0}" required>
+                    </div>
+                    <div class="col-md-1">
+                        <button type="button" class="btn btn-sm btn-danger" onclick="removeSlab(this)">
+                            <i class="fa fa-times"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+            container.appendChild(row);
+        }
+
+        function removeSlab(button) {
+            const container = button.closest('#slabsContainer' + button.closest('.modal').id.replace('manageSlabsModal', ''));
+            const row = button.closest('.slab-row');
+            row.remove();
+            
+            // Renumber remaining slabs
+            const rows = container.querySelectorAll('.slab-row');
+            rows.forEach((row, index) => {
+                const slabNumber = index + 1;
+                row.querySelector('label').textContent = `Slab ${slabNumber}`;
+                row.querySelector('input[name*="[slab_number]"]').value = slabNumber;
+            });
+        }
+
+        function saveSlabs(adminId) {
+            const container = document.getElementById(`slabsContainer${adminId}`);
+            const slabRows = container.querySelectorAll('.slab-row');
+            
+            // Collect data from DOM directly
+            const slabs = [];
+            const slabNumbers = new Set();
+            
+            slabRows.forEach((row, index) => {
+                const slabNumberInput = row.querySelector('input[name*="[slab_number]"]');
+                const fromAmountInput = row.querySelector('input[name*="[from_amount]"]');
+                const toAmountInput = row.querySelector('input[name*="[to_amount]"]');
+                const chargeInput = row.querySelector('input[name*="[charge]"]');
+                
+                if (!slabNumberInput || !fromAmountInput || !chargeInput) {
+                    return; // Skip invalid rows
+                }
+                
+                const slabNumber = parseInt(slabNumberInput.value) || (index + 1);
+                const fromAmount = parseFloat(fromAmountInput.value) || 0;
+                const toAmountValue = toAmountInput ? toAmountInput.value.trim() : '';
+                const toAmount = toAmountValue !== '' ? parseFloat(toAmountValue) : null;
+                const charge = parseFloat(chargeInput.value) || 0;
+                
+                slabs.push({
+                    slab_number: slabNumber,
+                    from_amount: fromAmount,
+                    to_amount: toAmount,
+                    charge: charge
+                });
+                
+                slabNumbers.add(slabNumber);
+            });
+            
+            if (slabs.length === 0) {
+                alert('Please add at least one slab');
+                return;
+            }
+            
+            // Validate slab numbers are sequential
+            const sortedNumbers = Array.from(slabNumbers).sort((a, b) => a - b);
+            for (let i = 0; i < sortedNumbers.length; i++) {
+                if (sortedNumbers[i] !== i + 1) {
+                    alert('Slab numbers must be sequential starting from 1');
+                    return;
+                }
+            }
+            
+            // Validate ranges don't overlap
+            for (let i = 0; i < slabs.length; i++) {
+                for (let j = i + 1; j < slabs.length; j++) {
+                    const slab1 = slabs[i];
+                    const slab2 = slabs[j];
+                    
+                    if (slab1.to_amount !== null && slab2.to_amount !== null) {
+                        if ((slab1.from_amount >= slab2.from_amount && slab1.from_amount < slab2.to_amount) ||
+                            (slab1.to_amount > slab2.from_amount && slab1.to_amount <= slab2.to_amount) ||
+                            (slab2.from_amount >= slab1.from_amount && slab2.from_amount < slab1.to_amount) ||
+                            (slab2.to_amount > slab1.from_amount && slab2.to_amount <= slab1.to_amount)) {
+                            alert('Slab ranges cannot overlap');
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            fetch(`{{ url('/superadmin/admins') }}/${adminId}/slabs`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({ slabs: slabs })
+            })
+            .then(response => {
+                return response.json().then(data => {
+                    if (!response.ok) {
+                        throw new Error(data.message || 'Failed to save slabs');
+                    }
+                    return data;
+                });
+            })
+            .then(data => {
+                if (data.success) {
+                    alert('Slabs saved successfully!');
+                    const modal = bootstrap.Modal.getInstance(document.getElementById(`manageSlabsModal${adminId}`));
+                    modal.hide();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to save slabs'));
+                }
+            })
+            .catch(error => {
+                console.error('Error saving slabs:', error);
+                alert('Error: ' + error.message);
+            });
+        }
+    </script>
 </body>
 </html>
 

@@ -7,6 +7,7 @@ use App\Mail\CustomerCreatedMail;
 use App\Mail\InvoiceGeneratedMail;
 use App\Models\Customer;
 use App\Models\Invoice;
+use App\Models\Slab;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -184,12 +185,16 @@ class AdminCustomerController extends Controller
                 $invoiceNumber = $customer->user_number . str_pad((string)$invoiceSequence, 4, '0', STR_PAD_LEFT);
             }
 
+            // Calculate charge based on invoice amount and admin's slabs
+            $charge = $this->calculateCharge(Auth::id(), $customer->balance);
+
             $invoice = Invoice::create([
                 'customer_id' => $customer->id,
                 'admin_id' => Auth::id(),
                 'reference_id' => $customer->reference_id,
                 'invoice_number' => $invoiceNumber,
                 'amount' => $customer->balance,
+                'charge' => $charge,
                 'status' => 'pending',
             ]);
 
@@ -284,12 +289,16 @@ class AdminCustomerController extends Controller
                 $invoiceNumber = $customer->user_number . str_pad((string)$invoiceSequence, 4, '0', STR_PAD_LEFT);
             }
 
+            // Calculate charge based on invoice amount and admin's slabs
+            $charge = $this->calculateCharge(Auth::id(), $request->amount);
+
             $invoice = Invoice::create([
                 'customer_id' => $customer->id,
                 'admin_id' => Auth::id(),
                 'reference_id' => $customer->reference_id,
                 'invoice_number' => $invoiceNumber,
                 'amount' => $request->amount,
+                'charge' => $charge,
                 'due_date' => $request->due_date,
                 'expiry_date' => $request->expiry_date,
                 'amount_after_due_date' => $request->amount_after_due_date,
@@ -351,5 +360,32 @@ class AdminCustomerController extends Controller
             ->findOrFail($id);
 
         return view('admin.invoices.show', compact('invoice'));
+    }
+
+    /**
+     * Calculate charge based on payment amount and admin's slabs
+     */
+    private function calculateCharge($adminId, $amount)
+    {
+        $slabs = Slab::where('admin_id', $adminId)
+            ->orderBy('slab_number')
+            ->get();
+
+        if ($slabs->isEmpty()) {
+            return 0; // No slabs configured, no charge
+        }
+
+        // Find the matching slab
+        foreach ($slabs as $slab) {
+            if ($amount >= $slab->from_amount) {
+                // Check if amount is within this slab's range
+                if ($slab->to_amount === null || $amount <= $slab->to_amount) {
+                    return $slab->charge;
+                }
+            }
+        }
+
+        // If no matching slab found, return 0
+        return 0;
     }
 }

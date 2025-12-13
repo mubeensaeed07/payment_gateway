@@ -66,6 +66,8 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
         Route::post('/users/create', [SuperAdminController::class, 'createUser'])->name('users.create');
         Route::put('/users/{id}/prefix', [SuperAdminController::class, 'updatePrefix'])->name('users.update-prefix');
         Route::delete('/users/{id}', [SuperAdminController::class, 'deleteUser'])->name('users.delete');
+        Route::get('/admins/{id}/slabs', [SuperAdminController::class, 'getSlabs'])->name('admins.slabs.get');
+        Route::post('/admins/{id}/slabs', [SuperAdminController::class, 'storeSlabs'])->name('admins.slabs.store');
     });
 
     // Admin routes

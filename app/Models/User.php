@@ -92,4 +92,12 @@ class User extends Authenticatable
     {
         return $this->hasMany(Invoice::class, 'admin_id');
     }
+
+    /**
+     * Get all slabs for this admin
+     */
+    public function slabs()
+    {
+        return $this->hasMany(Slab::class, 'admin_id')->orderBy('slab_number');
+    }
 }

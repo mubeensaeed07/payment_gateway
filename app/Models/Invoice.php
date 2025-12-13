@@ -13,6 +13,7 @@ class Invoice extends Model
         'reference_id',
         'invoice_number',
         'amount',
+        'charge',
         'due_date',
         'expiry_date',
         'amount_after_due_date',
@@ -24,6 +25,7 @@ class Invoice extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
+        'charge' => 'decimal:2',
         'amount_after_due_date' => 'decimal:2',
         'due_date' => 'date',
         'expiry_date' => 'date',

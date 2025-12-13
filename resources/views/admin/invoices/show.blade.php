@@ -285,6 +285,17 @@
                         <strong>PKR {{ number_format($invoice->amount, 2) }}</strong>
                     </td>
                 </tr>
+                @if($invoice->charge && $invoice->charge > 0)
+                    <tr>
+                        <td>
+                            <strong>Service Charge</strong><br>
+                            <small>Charges applied based on payment amount slab</small>
+                        </td>
+                        <td class="text-right">
+                            <strong>PKR {{ number_format($invoice->charge, 2) }}</strong>
+                        </td>
+                    </tr>
+                @endif
                 @if($invoice->amount_after_due_date && $invoice->amount_after_due_date > 0)
                     <tr>
                         <td>
@@ -304,6 +315,12 @@
                 <div class="invoice-total-label">Subtotal:</div>
                 <div class="invoice-total-amount">PKR {{ number_format($invoice->amount, 2) }}</div>
             </div>
+            @if($invoice->charge && $invoice->charge > 0)
+                <div class="invoice-total-row">
+                    <div class="invoice-total-label">Service Charge:</div>
+                    <div class="invoice-total-amount">PKR {{ number_format($invoice->charge, 2) }}</div>
+                </div>
+            @endif
             @if($invoice->amount_after_due_date && $invoice->amount_after_due_date > 0)
                 <div class="invoice-total-row">
                     <div class="invoice-total-label">Late Payment Fee:</div>
@@ -312,7 +329,7 @@
             @endif
             <div class="invoice-total-row">
                 <div class="invoice-total-label">Total Amount:</div>
-                <div class="invoice-total-amount">PKR {{ number_format($invoice->amount + ($invoice->amount_after_due_date ?? 0), 2) }}</div>
+                <div class="invoice-total-amount">PKR {{ number_format($invoice->amount + ($invoice->charge ?? 0) + ($invoice->amount_after_due_date ?? 0), 2) }}</div>
             </div>
         </div>
         

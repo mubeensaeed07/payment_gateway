@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Models\Customer;
+use App\Models\Slab;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -80,6 +81,8 @@ class BillApiController extends Controller
                         'customer_number' => $invoice->customer->user_number,
                         'customer_email' => $invoice->customer->email,
                         'amount' => (float)$invoice->amount,
+                        'charge' => (float)($invoice->charge ?? 0),
+                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0)),
                         'status' => $invoice->status,
                         'due_date' => $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null,
                         'expiry_date' => $invoice->expiry_date ? $invoice->expiry_date->format('Y-m-d') : null,
@@ -110,6 +113,8 @@ class BillApiController extends Controller
                     return [
                         'invoice_number' => $invoice->invoice_number,
                         'amount' => (float)$invoice->amount,
+                        'charge' => (float)($invoice->charge ?? 0),
+                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0)),
                         'status' => $invoice->status,
                         'due_date' => $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null,
                         'expiry_date' => $invoice->expiry_date ? $invoice->expiry_date->format('Y-m-d') : null,
@@ -174,17 +179,29 @@ class BillApiController extends Controller
             ], 400);
         }
 
-        // Validate amount matches invoice amount
-        if (abs($amount - $invoice->amount) > 0.01) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Payment amount does not match invoice amount. Invoice amount: ' . number_format($invoice->amount, 2)
-            ], 400);
-        }
-
         DB::beginTransaction();
         try {
             $paymentDate = $request->payment_date ? \Carbon\Carbon::parse($request->payment_date) : now();
+
+            // Calculate charge based on slabs if not already set
+            $charge = $invoice->charge ?? 0;
+            if ($charge == 0) {
+                $charge = $this->calculateCharge($invoice->admin_id, $invoice->amount);
+                // Update invoice with calculated charge
+                $invoice->update(['charge' => $charge]);
+            }
+
+            // Validate amount matches invoice total (invoice amount + charge)
+            $invoiceTotal = $invoice->amount + $charge;
+            if (abs($amount - $invoiceTotal) > 0.01) {
+                DB::rollBack();
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Payment amount does not match invoice total. Invoice amount: ' . number_format($invoice->amount, 2) . 
+                                ($charge > 0 ? ' + Charge: ' . number_format($charge, 2) : '') . 
+                                ' = Total: ' . number_format($invoiceTotal, 2)
+                ], 400);
+            }
 
             // Update invoice
             $invoice->update([
@@ -210,6 +227,8 @@ class BillApiController extends Controller
                         'customer_name' => $invoice->customer->name,
                         'customer_number' => $invoice->customer->user_number,
                         'amount' => (float)$invoice->amount,
+                        'charge' => (float)$charge,
+                        'total' => (float)($invoice->amount + $charge),
                         'status' => $invoice->status,
                         'paid_at' => $invoice->paid_at->format('Y-m-d H:i:s'),
                         'transaction_id' => $request->transaction_id,
@@ -224,6 +243,33 @@ class BillApiController extends Controller
                 'message' => 'Payment processing failed: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Calculate charge based on payment amount and admin's slabs
+     */
+    private function calculateCharge($adminId, $amount)
+    {
+        $slabs = Slab::where('admin_id', $adminId)
+            ->orderBy('slab_number')
+            ->get();
+
+        if ($slabs->isEmpty()) {
+            return 0; // No slabs configured, no charge
+        }
+
+        // Find the matching slab
+        foreach ($slabs as $slab) {
+            if ($amount >= $slab->from_amount) {
+                // Check if amount is within this slab's range
+                if ($slab->to_amount === null || $amount <= $slab->to_amount) {
+                    return $slab->charge;
+                }
+            }
+        }
+
+        // If no matching slab found, return 0
+        return 0;
     }
 }
 

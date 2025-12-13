@@ -3,8 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Mail\UserInvitationMail;
+use App\Models\Slab;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 
@@ -27,6 +29,7 @@ class SuperAdminController extends Controller
     public function admins(Request $request)
     {
         $users = User::where('role', 'admin')
+            ->with('slabs')
             ->orderBy('created_at', 'desc')
             ->paginate(15);
 
@@ -154,6 +157,76 @@ class SuperAdminController extends Controller
         $user->delete();
 
         return redirect()->back()->with('success', 'User deleted successfully.');
+    }
+
+    /**
+     * Get slabs for an admin
+     */
+    public function getSlabs($adminId)
+    {
+        $admin = User::where('role', 'admin')->findOrFail($adminId);
+        $slabs = $admin->slabs;
+
+        return response()->json([
+            'success' => true,
+            'slabs' => $slabs
+        ]);
+    }
+
+    /**
+     * Store or update slabs for an admin
+     */
+    public function storeSlabs(Request $request, $adminId)
+    {
+        $admin = User::where('role', 'admin')->findOrFail($adminId);
+
+        $request->validate([
+            'slabs' => 'required|array|min:1|max:6',
+            'slabs.*.slab_number' => 'required|integer|min:1|max:6',
+            'slabs.*.from_amount' => 'required|numeric|min:0',
+            'slabs.*.to_amount' => 'nullable|numeric|min:0',
+            'slabs.*.charge' => 'required|numeric|min:0',
+        ]);
+
+        // Additional validation: to_amount must be greater than from_amount
+        foreach ($request->slabs as $index => $slab) {
+            if ($slab['to_amount'] !== null && $slab['to_amount'] <= $slab['from_amount']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Slab " . ($index + 1) . ": To Amount must be greater than From Amount."
+                ], 422);
+            }
+        }
+
+        DB::beginTransaction();
+        try {
+            // Delete existing slabs for this admin
+            Slab::where('admin_id', $adminId)->delete();
+
+            // Create new slabs
+            foreach ($request->slabs as $slabData) {
+                Slab::create([
+                    'admin_id' => $adminId,
+                    'slab_number' => $slabData['slab_number'],
+                    'from_amount' => $slabData['from_amount'],
+                    'to_amount' => $slabData['to_amount'] ?? null,
+                    'charge' => $slabData['charge'],
+                ]);
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Slabs saved successfully.'
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save slabs: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
 
