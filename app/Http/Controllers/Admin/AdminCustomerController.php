@@ -152,6 +152,12 @@ class AdminCustomerController extends Controller
         $customer = Customer::where('admin_id', Auth::id())
             ->findOrFail($customerId);
 
+        // Prevent creating invoice with zero amount
+        if ($customer->balance <= 0) {
+            return redirect()->back()
+                ->with('error', 'Cannot create invoice with zero or negative amount. Please set a balance for the customer first.');
+        }
+
         DB::beginTransaction();
         try {
             // Generate invoice number: prefix + customer_number + sequential_invoice_number

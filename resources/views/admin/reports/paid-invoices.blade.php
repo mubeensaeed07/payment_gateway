@@ -78,6 +78,7 @@
                                                     <th>Customer</th>
                                                     <th>Customer Number</th>
                                                     <th>Amount</th>
+                                                    <th>Bank</th>
                                                     <th>Paid Date</th>
                                                     <th>Created Date</th>
                                                     <th>Actions</th>
@@ -90,6 +91,13 @@
                                                         <td>{{ $invoice->customer->name }}</td>
                                                         <td>{{ $invoice->customer->user_number }}</td>
                                                         <td>PKR {{ number_format($invoice->amount, 2) }}</td>
+                                                        <td>
+                                                            @if($invoice->bank)
+                                                                {{ $invoice->bank }}
+                                                            @else
+                                                                <span class="text-muted">-</span>
+                                                            @endif
+                                                        </td>
                                                         <td>
                                                             @if($invoice->paid_at)
                                                                 {{ $invoice->paid_at->format('Y-m-d H:i') }}

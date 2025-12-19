@@ -172,6 +172,9 @@
                                                             <button type="button" class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#manageSlabsModal{{ $user->id }}">
                                                                 Manage Slabs
                                                             </button>
+                                                            <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manageExternalProviderModal{{ $user->id }}">
+                                                                External Provider
+                                                            </button>
                                                             <form action="{{ route('superadmin.users.delete', $user->id) }}" method="POST" onsubmit="return confirm('Are you sure you want to delete this admin?')">
                                                                 @csrf
                                                                 @method('DELETE')
@@ -235,6 +238,45 @@
                                                         </div>
                                                     </div>
                                                 </div>
+
+                                                <!-- Manage External Provider Modal -->
+                                                <div class="modal fade" id="manageExternalProviderModal{{ $user->id }}" tabindex="-1" aria-labelledby="manageExternalProviderModalLabel{{ $user->id }}" aria-hidden="true">
+                                                    <div class="modal-dialog">
+                                                        <div class="modal-content">
+                                                            <div class="modal-header">
+                                                                <h5 class="modal-title" id="manageExternalProviderModalLabel{{ $user->id }}">External Provider Credentials for {{ $user->name }}</h5>
+                                                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                            </div>
+                                                            <div class="modal-body">
+                                                                <form id="externalProviderForm{{ $user->id }}">
+                                                                    <div class="mb-3">
+                                                                        <label class="form-label">Username <span class="text-danger">*</span></label>
+                                                                        <input type="text" name="username" class="form-control" id="externalProviderUsername{{ $user->id }}" required>
+                                                                    </div>
+                                                                    <div class="mb-3">
+                                                                        <label class="form-label">Password <span class="text-danger">*</span></label>
+                                                                        <input type="password" name="password" class="form-control" id="externalProviderPassword{{ $user->id }}" required>
+                                                                    </div>
+                                                                    <div class="mb-3">
+                                                                        <label class="form-label">Bill Enquiry API URL <span class="text-danger">*</span></label>
+                                                                        <input type="url" name="bill_enquiry_url" class="form-control" id="externalProviderEnquiryUrl{{ $user->id }}" placeholder="https://example.com/api/bill-enquiry" required>
+                                                                    </div>
+                                                                    <div class="mb-3">
+                                                                        <label class="form-label">Bill Payment API URL <span class="text-danger">*</span></label>
+                                                                        <input type="url" name="bill_payment_url" class="form-control" id="externalProviderPaymentUrl{{ $user->id }}" placeholder="https://example.com/api/bill-payment" required>
+                                                                    </div>
+                                                                    <div class="alert alert-info">
+                                                                        <small><strong>Note:</strong> When invoice numbers end with "02", the system will route requests to these external provider APIs.</small>
+                                                                    </div>
+                                                                </form>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                                <button type="button" class="btn btn-primary" onclick="saveExternalProvider({{ $user->id }})">Save Credentials</button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
                                             @empty
                                                 <tr>
                                                     <td colspan="6" class="text-center">No admins found</td>
@@ -291,6 +333,14 @@
             if (manageSlabsModal{{ $user->id }}) {
                 manageSlabsModal{{ $user->id }}.addEventListener('show.bs.modal', function() {
                     loadSlabs({{ $user->id }});
+                });
+            }
+            
+            // Add event listener for external provider modal
+            const manageExternalProviderModal{{ $user->id }} = document.getElementById('manageExternalProviderModal{{ $user->id }}');
+            if (manageExternalProviderModal{{ $user->id }}) {
+                manageExternalProviderModal{{ $user->id }}.addEventListener('show.bs.modal', function() {
+                    loadExternalProvider({{ $user->id }});
                 });
             }
             @endforeach
@@ -512,6 +562,81 @@
             .catch(error => {
                 console.error('Error saving slabs:', error);
                 alert('Error: ' + error.message);
+            });
+        }
+
+        function loadExternalProvider(adminId) {
+            fetch(`{{ url('/superadmin/admins') }}/${adminId}/external-provider`, {
+                method: 'GET',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.external_provider) {
+                    document.getElementById(`externalProviderUsername${adminId}`).value = data.external_provider.username || '';
+                    document.getElementById(`externalProviderPassword${adminId}`).value = '';
+                    document.getElementById(`externalProviderEnquiryUrl${adminId}`).value = data.external_provider.bill_enquiry_url || '';
+                    document.getElementById(`externalProviderPaymentUrl${adminId}`).value = data.external_provider.bill_payment_url || '';
+                } else {
+                    // Clear fields if no external provider exists
+                    document.getElementById(`externalProviderUsername${adminId}`).value = '';
+                    document.getElementById(`externalProviderPassword${adminId}`).value = '';
+                    document.getElementById(`externalProviderEnquiryUrl${adminId}`).value = '';
+                    document.getElementById(`externalProviderPaymentUrl${adminId}`).value = '';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading external provider:', error);
+                // Clear fields on error
+                document.getElementById(`externalProviderUsername${adminId}`).value = '';
+                document.getElementById(`externalProviderPassword${adminId}`).value = '';
+                document.getElementById(`externalProviderEnquiryUrl${adminId}`).value = '';
+                document.getElementById(`externalProviderPaymentUrl${adminId}`).value = '';
+            });
+        }
+
+        function saveExternalProvider(adminId) {
+            const username = document.getElementById(`externalProviderUsername${adminId}`).value.trim();
+            const password = document.getElementById(`externalProviderPassword${adminId}`).value;
+            const billEnquiryUrl = document.getElementById(`externalProviderEnquiryUrl${adminId}`).value.trim();
+            const billPaymentUrl = document.getElementById(`externalProviderPaymentUrl${adminId}`).value.trim();
+
+            if (!username || !password || !billEnquiryUrl || !billPaymentUrl) {
+                alert('Please fill in all fields');
+                return;
+            }
+
+            fetch(`{{ url('/superadmin/admins') }}/${adminId}/external-provider`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': '{{ csrf_token() }}'
+                },
+                body: JSON.stringify({
+                    username: username,
+                    password: password,
+                    bill_enquiry_url: billEnquiryUrl,
+                    bill_payment_url: billPaymentUrl
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('External provider credentials saved successfully!');
+                    const modal = bootstrap.Modal.getInstance(document.getElementById(`manageExternalProviderModal${adminId}`));
+                    modal.hide();
+                } else {
+                    alert('Error: ' + (data.message || 'Failed to save external provider credentials'));
+                }
+            })
+            .catch(error => {
+                console.error('Error saving external provider:', error);
+                alert('Error saving external provider credentials. Please try again.');
             });
         }
     </script>

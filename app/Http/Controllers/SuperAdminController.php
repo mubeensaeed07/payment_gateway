@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Mail\UserInvitationMail;
+use App\Models\ExternalProvider;
 use App\Models\Slab;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -29,7 +30,7 @@ class SuperAdminController extends Controller
     public function admins(Request $request)
     {
         $users = User::where('role', 'admin')
-            ->with('slabs')
+            ->with(['slabs', 'externalProvider'])
             ->orderBy('created_at', 'desc')
             ->paginate(15);
 
@@ -225,6 +226,61 @@ class SuperAdminController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to save slabs: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get external provider for an admin
+     */
+    public function getExternalProvider($adminId)
+    {
+        $admin = User::where('role', 'admin')->findOrFail($adminId);
+        $externalProvider = $admin->externalProvider;
+
+        return response()->json([
+            'success' => true,
+            'external_provider' => $externalProvider
+        ]);
+    }
+
+    /**
+     * Store or update external provider for an admin
+     */
+    public function storeExternalProvider(Request $request, $adminId)
+    {
+        $admin = User::where('role', 'admin')->findOrFail($adminId);
+
+        $request->validate([
+            'username' => 'required|string|max:255',
+            'password' => 'required|string|max:255',
+            'bill_enquiry_url' => 'required|url|max:500',
+            'bill_payment_url' => 'required|url|max:500',
+        ]);
+
+        DB::beginTransaction();
+        try {
+            ExternalProvider::updateOrCreate(
+                ['admin_id' => $adminId],
+                [
+                    'username' => $request->username,
+                    'password' => $request->password, // Will be encrypted by model
+                    'bill_enquiry_url' => $request->bill_enquiry_url,
+                    'bill_payment_url' => $request->bill_payment_url,
+                ]
+            );
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'External provider credentials saved successfully.'
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save external provider credentials: ' . $e->getMessage()
             ], 500);
         }
     }

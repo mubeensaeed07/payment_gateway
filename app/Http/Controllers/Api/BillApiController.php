@@ -3,12 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\ExternalProvider;
 use App\Models\Invoice;
 use App\Models\Customer;
 use App\Models\Slab;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
 
 class BillApiController extends Controller
@@ -42,6 +44,16 @@ class BillApiController extends Controller
         $customerNumber = $request->customer_number;
         $invoiceNumber = $request->invoice_number;
 
+        // Check if invoice number ends with "02" (external provider request)
+        $isExternalProvider = false;
+        $originalInvoiceNumber = $invoiceNumber;
+        
+        if ($invoiceNumber && strlen($invoiceNumber) >= 2 && substr($invoiceNumber, -2) === '02') {
+            $isExternalProvider = true;
+            // Strip "02" from the end
+            $invoiceNumber = substr($invoiceNumber, 0, -2);
+        }
+
         // Build customer number with prefix
         $fullCustomerNumber = $prefix . str_pad($customerNumber, 4, '0', STR_PAD_LEFT);
 
@@ -59,6 +71,15 @@ class BillApiController extends Controller
         // If invoice number provided, get specific invoice
         if ($invoiceNumber) {
             $fullInvoiceNumber = $fullCustomerNumber . str_pad($invoiceNumber, 4, '0', STR_PAD_LEFT);
+            
+            // If this is an external provider request, route to their API
+            if ($isExternalProvider) {
+                return $this->routeToExternalProvider($customer->admin_id, 'inquiry', [
+                    'prefix' => $prefix,
+                    'customer_number' => $customerNumber,
+                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                ]);
+            }
             
             $invoice = Invoice::where('customer_id', $customer->id)
                 ->where('invoice_number', $fullInvoiceNumber)
@@ -159,6 +180,16 @@ class BillApiController extends Controller
         $invoiceNumber = $request->invoice_number;
         $amount = $request->amount;
 
+        // Check if invoice number ends with "02" (external provider request)
+        $isExternalProvider = false;
+        $originalInvoiceNumber = $invoiceNumber;
+        
+        if (strlen($invoiceNumber) >= 2 && substr($invoiceNumber, -2) === '02') {
+            $isExternalProvider = true;
+            // Strip "02" from the end to get our internal invoice number
+            $invoiceNumber = substr($invoiceNumber, 0, -2);
+        }
+
         // Find invoice
         $invoice = Invoice::where('invoice_number', $invoiceNumber)
             ->with('customer')
@@ -169,6 +200,17 @@ class BillApiController extends Controller
                 'success' => false,
                 'message' => 'Invoice not found'
             ], 404);
+        }
+
+        // If this is an external provider request, route to their API
+        if ($isExternalProvider) {
+            return $this->routeToExternalProvider($invoice->admin_id, 'payment', [
+                'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                'amount' => $amount,
+                'transaction_id' => $request->transaction_id,
+                'payment_date' => $request->payment_date,
+                'payment_method' => $request->payment_method,
+            ]);
         }
 
         // Check if already paid
@@ -191,22 +233,42 @@ class BillApiController extends Controller
                 $invoice->update(['charge' => $charge]);
             }
 
-            // Validate amount matches invoice total (invoice amount + charge)
-            $invoiceTotal = $invoice->amount + $charge;
+            // Check if payment is after due date and include amount_after_due_date
+            $dueDateAmount = 0;
+            if ($invoice->due_date && $invoice->amount_after_due_date && $invoice->amount_after_due_date > 0) {
+                // Compare payment date with due date
+                $dueDate = \Carbon\Carbon::parse($invoice->due_date)->startOfDay();
+                $paymentDateOnly = $paymentDate->copy()->startOfDay();
+                
+                if ($paymentDateOnly->gt($dueDate)) {
+                    // Payment is after due date, include the after-due-date amount
+                    $dueDateAmount = $invoice->amount_after_due_date;
+                }
+            }
+
+            // Calculate total: invoice amount + charge + due date amount (if applicable)
+            $invoiceTotal = $invoice->amount + $charge + $dueDateAmount;
+            
+            // Validate amount matches invoice total
             if (abs($amount - $invoiceTotal) > 0.01) {
                 DB::rollBack();
                 return response()->json([
                     'success' => false,
                     'message' => 'Payment amount does not match invoice total. Invoice amount: ' . number_format($invoice->amount, 2) . 
                                 ($charge > 0 ? ' + Charge: ' . number_format($charge, 2) : '') . 
+                                ($dueDateAmount > 0 ? ' + After Due Date Amount: ' . number_format($dueDateAmount, 2) : '') .
                                 ' = Total: ' . number_format($invoiceTotal, 2)
                 ], 400);
             }
+
+            // Store bank information from payment_method (API sends payment_method as bank name)
+            $bank = $request->payment_method ?? null;
 
             // Update invoice
             $invoice->update([
                 'status' => 'paid',
                 'paid_at' => $paymentDate,
+                'bank' => $bank,
             ]);
 
             // Update customer balance to next unpaid invoice (if any)
@@ -228,11 +290,13 @@ class BillApiController extends Controller
                         'customer_number' => $invoice->customer->user_number,
                         'amount' => (float)$invoice->amount,
                         'charge' => (float)$charge,
-                        'total' => (float)($invoice->amount + $charge),
+                        'due_date_amount' => (float)$dueDateAmount,
+                        'total' => (float)$invoiceTotal,
                         'status' => $invoice->status,
                         'paid_at' => $invoice->paid_at->format('Y-m-d H:i:s'),
                         'transaction_id' => $request->transaction_id,
                         'payment_method' => $request->payment_method,
+                        'bank' => $bank,
                     ]
                 ]
             ]);
@@ -270,6 +334,49 @@ class BillApiController extends Controller
 
         // If no matching slab found, return 0
         return 0;
+    }
+
+    /**
+     * Route request to external provider API
+     */
+    private function routeToExternalProvider($adminId, $type, $data)
+    {
+        // Get external provider credentials for this admin
+        $externalProvider = ExternalProvider::where('admin_id', $adminId)->first();
+
+        if (!$externalProvider) {
+            return response()->json([
+                'success' => false,
+                'message' => 'External provider not configured for this admin'
+            ], 404);
+        }
+
+        // Determine API URL based on type
+        $apiUrl = $type === 'inquiry' 
+            ? $externalProvider->bill_enquiry_url 
+            : $externalProvider->bill_payment_url;
+
+        try {
+            // Prepare request data with authentication
+            $requestData = array_merge($data, [
+                'username' => $externalProvider->username,
+                'password' => $externalProvider->password,
+            ]);
+
+            // Make HTTP request to external provider API
+            $response = Http::timeout(30)->post($apiUrl, $requestData);
+
+            // Return the external provider's response
+            return response()->json(
+                $response->json(),
+                $response->status()
+            );
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to connect to external provider: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }
 

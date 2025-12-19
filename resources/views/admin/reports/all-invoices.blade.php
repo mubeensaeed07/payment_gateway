@@ -97,6 +97,7 @@
                                                     <th>Customer Number</th>
                                                     <th>Amount</th>
                                                     <th>Status</th>
+                                                    <th>Bank</th>
                                                     <th>Due Date</th>
                                                     <th>Paid Date</th>
                                                     <th>Created Date</th>
@@ -119,6 +120,13 @@
                                                                 <span class="badge bg-secondary">Blocked</span>
                                                             @else
                                                                 <span class="badge bg-danger">{{ ucfirst($invoice->status) }}</span>
+                                                            @endif
+                                                        </td>
+                                                        <td>
+                                                            @if($invoice->bank)
+                                                                {{ $invoice->bank }}
+                                                            @else
+                                                                <span class="text-muted">-</span>
                                                             @endif
                                                         </td>
                                                         <td>

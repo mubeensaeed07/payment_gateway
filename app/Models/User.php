@@ -100,4 +100,12 @@ class User extends Authenticatable
     {
         return $this->hasMany(Slab::class, 'admin_id')->orderBy('slab_number');
     }
+
+    /**
+     * Get external provider for this admin
+     */
+    public function externalProvider()
+    {
+        return $this->hasOne(ExternalProvider::class, 'admin_id');
+    }
 }
