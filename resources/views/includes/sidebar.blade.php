@@ -59,6 +59,12 @@
                             <span class="nav-text">Tools</span>
                         </a>
                     </li>
+                    <li>
+                        <a href="{{ route('admin.logs.index') }}" class="ai-icon" aria-expanded="false">
+                            <i class="flaticon-381-list"></i>
+                            <span class="nav-text">Logs</span>
+                        </a>
+                    </li>
                 @else
                     <li>
                         <a href="{{ route('reseller.dashboard') }}" class="ai-icon" aria-expanded="false">

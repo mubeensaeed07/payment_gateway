@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ExternalProvider;
+use App\Models\ExternalProviderLog;
 use App\Models\Invoice;
 use App\Models\Customer;
 use App\Models\Slab;
@@ -63,13 +64,13 @@ class BillApiController extends Controller
             // Found specific invoice
             // If this is an external provider request, route to their API
             if ($isExternalProvider) {
-                // Extract prefix and customer number from customer.user_number
-                $customerNumber = $invoice->customer->user_number;
-                // Try to extract prefix (first 4 digits) and customer number (rest)
-                // This is a best guess - we'll send what we have
-                return $this->routeToExternalProvider($invoice->admin_id, 'inquiry', [
-                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
-                ]);
+                return $this->routeToExternalProvider(
+                    $invoice->admin_id, 
+                    'inquiry', 
+                    [
+                        'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                    ]
+                );
             }
 
             return response()->json([
@@ -106,9 +107,13 @@ class BillApiController extends Controller
 
         // If this is an external provider request and we found customer, route to their API
         if ($isExternalProvider) {
-            return $this->routeToExternalProvider($customer->admin_id, 'inquiry', [
-                'invoice_number' => $originalInvoiceNumber, // Send original with "02"
-            ]);
+            return $this->routeToExternalProvider(
+                $customer->admin_id, 
+                'inquiry', 
+                [
+                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                ]
+            );
         }
 
         // Get all invoices for customer
@@ -207,13 +212,17 @@ class BillApiController extends Controller
 
             // If this is an external provider request and we found customer, route to their API
             if ($isExternalProvider) {
-                return $this->routeToExternalProvider($customer->admin_id, 'payment', [
-                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
-                    'amount' => $amount,
-                    'transaction_id' => $request->transaction_id,
-                    'payment_date' => $request->payment_date,
-                    'payment_method' => $request->payment_method,
-                ]);
+                return $this->routeToExternalProvider(
+                    $customer->admin_id, 
+                    'payment', 
+                    [
+                        'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                        'amount' => $amount,
+                        'transaction_id' => $request->transaction_id,
+                        'payment_date' => $request->payment_date,
+                        'payment_method' => $request->payment_method,
+                    ]
+                );
             }
 
             // Get the latest unpaid invoice for this customer
@@ -229,13 +238,17 @@ class BillApiController extends Controller
 
         // If this is an external provider request, route to their API
         if ($isExternalProvider) {
-            return $this->routeToExternalProvider($invoice->admin_id, 'payment', [
-                'invoice_number' => $originalInvoiceNumber, // Send original with "02"
-                'amount' => $amount,
-                'transaction_id' => $request->transaction_id,
-                'payment_date' => $request->payment_date,
-                'payment_method' => $request->payment_method,
-            ]);
+            return $this->routeToExternalProvider(
+                $invoice->admin_id, 
+                'payment', 
+                [
+                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                    'amount' => $amount,
+                    'transaction_id' => $request->transaction_id,
+                    'payment_date' => $request->payment_date,
+                    'payment_method' => $request->payment_method,
+                ]
+            );
         }
 
         // Check if already paid
@@ -364,12 +377,15 @@ class BillApiController extends Controller
     /**
      * Route request to external provider API
      */
-    private function routeToExternalProvider($adminId, $type, $data)
+    private function routeToExternalProvider($adminId, $type, $data, $customerName = null, $customerNumber = null)
     {
         // Get external provider credentials for this admin
         $externalProvider = ExternalProvider::where('admin_id', $adminId)->first();
 
         if (!$externalProvider) {
+            // Log the failure (no customer info available since external provider not configured)
+            $this->logExternalProviderRequest($adminId, $type, $data, null, null, false, 'External provider not configured for this admin', null, null, null);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'External provider not configured for this admin'
@@ -381,26 +397,239 @@ class BillApiController extends Controller
             ? $externalProvider->bill_enquiry_url 
             : $externalProvider->bill_payment_url;
 
-        try {
-            // Prepare request data with authentication
-            $requestData = array_merge($data, [
-                'username' => $externalProvider->username,
-                'password' => $externalProvider->password,
-            ]);
+        // For external provider requests, DO NOT look up customer info from local database
+        // We will extract it from the external provider's response instead
+        // This ensures we log what the external provider actually returned, not what's in our DB
 
+        // Prepare request data with authentication (for logging, we'll log without password)
+        $requestDataForLog = $data; // Don't include password in log
+        $requestData = array_merge($data, [
+            'username' => $externalProvider->username,
+            'password' => $externalProvider->password,
+        ]);
+
+        try {
             // Make HTTP request to external provider API
             $response = Http::timeout(30)->post($apiUrl, $requestData);
+            
+            $responseStatus = $response->status();
+            $responseBody = $response->json();
+            
+            // If response is not JSON, try to get as string
+            if ($responseBody === null) {
+                $responseBody = ['raw_response' => $response->body()];
+            }
+            
+            // Check if response is successful (both HTTP status and response body success field)
+            $httpSuccess = $responseStatus >= 200 && $responseStatus < 300;
+            $bodySuccess = isset($responseBody['success']) ? (bool)$responseBody['success'] : true;
+            $isSuccessful = $httpSuccess && $bodySuccess;
+            
+            // Extract customer information from external provider's response (even if failed, try to extract)
+            $responseCustomerName = null;
+            $responseCustomerNumber = null;
+            
+            if ($responseBody) {
+                $extractedInfo = $this->extractCustomerInfoFromResponse($responseBody, $type);
+                $responseCustomerName = $extractedInfo['customer_name'] ?? null;
+                $responseCustomerNumber = $extractedInfo['customer_number'] ?? null;
+            }
+            
+            // If customer number not found in response, try to extract from invoice number (remove "02" suffix)
+            if (!$responseCustomerNumber && isset($data['invoice_number'])) {
+                $invoiceNum = $data['invoice_number'];
+                if (strlen($invoiceNum) >= 2 && substr($invoiceNum, -2) === '02') {
+                    // Remove "02" suffix to get potential customer number
+                    $potentialCustomerNumber = substr($invoiceNum, 0, -2);
+                    // Only use if it looks like a valid customer number (has reasonable length)
+                    if (strlen($potentialCustomerNumber) >= 4) {
+                        $responseCustomerNumber = $potentialCustomerNumber;
+                    }
+                }
+            }
+            
+            // Determine error message if failed
+            $errorMessage = null;
+            if (!$isSuccessful) {
+                if (isset($responseBody['message'])) {
+                    $errorMessage = $responseBody['message'];
+                } elseif (isset($responseBody['error'])) {
+                    $errorMessage = $responseBody['error'];
+                } elseif (!$httpSuccess) {
+                    $errorMessage = 'HTTP Error: ' . $responseStatus;
+                } else {
+                    $errorMessage = 'Request failed';
+                }
+            }
+            
+            // Log successful or failed request with customer info from external provider's response
+            $this->logExternalProviderRequest(
+                $adminId,
+                $type,
+                $requestDataForLog,
+                $responseBody,
+                $responseStatus,
+                $isSuccessful,
+                $errorMessage,
+                $apiUrl,
+                $responseCustomerName, // Use customer name from external provider's response
+                $responseCustomerNumber // Use customer number from external provider's response
+            );
 
             // Return the external provider's response
             return response()->json(
-                $response->json(),
-                $response->status()
+                $responseBody,
+                $responseStatus
             );
         } catch (\Exception $e) {
+            // Log the exception (no customer info available since request failed)
+            $this->logExternalProviderRequest(
+                $adminId,
+                $type,
+                $requestDataForLog,
+                null,
+                500,
+                false,
+                'Failed to connect to external provider: ' . $e->getMessage(),
+                $apiUrl,
+                null, // No customer info available on error
+                null  // No customer info available on error
+            );
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to connect to external provider: ' . $e->getMessage()
             ], 500);
+        }
+    }
+
+    /**
+     * Extract customer information from external provider's response
+     */
+    private function extractCustomerInfoFromResponse($responseBody, $type)
+    {
+        $customerName = null;
+        $customerNumber = null;
+
+        if (!is_array($responseBody)) {
+            return ['customer_name' => null, 'customer_number' => null];
+        }
+
+        // Try various possible response structures
+        // Common patterns:
+        // 1. data.customer.name / data.customer.customer_number
+        // 2. data.invoice.customer_name / data.invoice.customer_number
+        // 3. data.invoices[0].customer_name (for multiple invoices)
+        // 4. customer.name / customer.customer_number
+        // 5. invoice.customer_name / invoice.customer_number
+
+        if (isset($responseBody['data'])) {
+            $data = $responseBody['data'];
+            
+            // Check for customer object
+            if (isset($data['customer']) && is_array($data['customer'])) {
+                $customer = $data['customer'];
+                $customerName = $customer['name'] ?? $customer['customer_name'] ?? $customer['customerName'] ?? null;
+                $customerNumber = $customer['customer_number'] ?? $customer['customer_no'] ?? $customer['customerNumber'] ?? $customer['number'] ?? $customer['customerNumber'] ?? null;
+            }
+            
+            // Check for invoice object with customer info
+            if (isset($data['invoice']) && is_array($data['invoice'])) {
+                $invoice = $data['invoice'];
+                if (!$customerName) {
+                    $customerName = $invoice['customer_name'] ?? $invoice['customerName'] ?? $invoice['name'] ?? null;
+                }
+                if (!$customerNumber) {
+                    $customerNumber = $invoice['customer_number'] ?? $invoice['customer_no'] ?? $invoice['customerNumber'] ?? null;
+                }
+            }
+            
+            // Check for invoices array (multiple invoices)
+            if (isset($data['invoices']) && is_array($data['invoices']) && count($data['invoices']) > 0) {
+                $firstInvoice = $data['invoices'][0];
+                if (!$customerName && isset($firstInvoice['customer_name'])) {
+                    $customerName = $firstInvoice['customer_name'];
+                }
+                if (!$customerNumber && isset($firstInvoice['customer_number'])) {
+                    $customerNumber = $firstInvoice['customer_number'];
+                }
+            }
+        }
+
+        // Check at root level
+        if (!$customerName && isset($responseBody['customer_name'])) {
+            $customerName = $responseBody['customer_name'];
+        }
+        if (!$customerName && isset($responseBody['customerName'])) {
+            $customerName = $responseBody['customerName'];
+        }
+        if (!$customerName && isset($responseBody['name'])) {
+            $customerName = $responseBody['name'];
+        }
+        // Check for alternative field names (like consumer_Detail, consumer_name, etc.)
+        if (!$customerName && isset($responseBody['consumer_Detail'])) {
+            $customerName = trim($responseBody['consumer_Detail']);
+        }
+        if (!$customerName && isset($responseBody['consumer_detail'])) {
+            $customerName = trim($responseBody['consumer_detail']);
+        }
+        if (!$customerName && isset($responseBody['consumer_name'])) {
+            $customerName = trim($responseBody['consumer_name']);
+        }
+        if (!$customerName && isset($responseBody['consumerName'])) {
+            $customerName = trim($responseBody['consumerName']);
+        }
+        
+        if (!$customerNumber && isset($responseBody['customer_number'])) {
+            $customerNumber = $responseBody['customer_number'];
+        }
+        if (!$customerNumber && isset($responseBody['customerNumber'])) {
+            $customerNumber = $responseBody['customerNumber'];
+        }
+        if (!$customerNumber && isset($responseBody['customer_no'])) {
+            $customerNumber = $responseBody['customer_no'];
+        }
+        if (!$customerNumber && isset($responseBody['customerNo'])) {
+            $customerNumber = $responseBody['customerNo'];
+        }
+        // Check for alternative field names
+        if (!$customerNumber && isset($responseBody['consumer_number'])) {
+            $customerNumber = $responseBody['consumer_number'];
+        }
+        if (!$customerNumber && isset($responseBody['consumerNumber'])) {
+            $customerNumber = $responseBody['consumerNumber'];
+        }
+
+        return [
+            'customer_name' => $customerName ? trim($customerName) : null,
+            'customer_number' => $customerNumber ? trim($customerNumber) : null
+        ];
+    }
+
+    /**
+     * Log external provider API request
+     */
+    private function logExternalProviderRequest($adminId, $type, $requestData, $responseData, $responseStatus, $isSuccessful, $errorMessage, $apiUrl, $customerName = null, $customerNumber = null)
+    {
+        try {
+            $invoiceNumber = $requestData['invoice_number'] ?? null;
+            
+            ExternalProviderLog::create([
+                'admin_id' => $adminId,
+                'api_type' => $type,
+                'invoice_number' => $invoiceNumber,
+                'customer_name' => $customerName,
+                'customer_number' => $customerNumber,
+                'request_data' => $requestData,
+                'response_data' => $responseData,
+                'response_status' => $responseStatus,
+                'is_successful' => $isSuccessful,
+                'error_message' => $errorMessage,
+                'external_provider_url' => $apiUrl,
+            ]);
+        } catch (\Exception $e) {
+            // Silently fail logging to not break the main flow
+            \Log::error('Failed to log external provider request: ' . $e->getMessage());
         }
     }
 }

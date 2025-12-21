@@ -153,6 +153,9 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
         
         // Tools routes
         Route::get('/tools', [\App\Http\Controllers\Admin\ToolsController::class, 'index'])->name('tools.index');
+        
+        // Logs routes
+        Route::get('/logs', [\App\Http\Controllers\Admin\AdminLogsController::class, 'index'])->name('logs.index');
     });
 
     // Reseller routes
