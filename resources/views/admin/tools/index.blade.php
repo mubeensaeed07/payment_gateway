@@ -78,28 +78,18 @@
                                 <form id="inquiryForm">
                                     @csrf
                                     <div class="row">
-                                        <div class="col-md-3">
+                                        <div class="col-md-10">
                                             <div class="form-group mb-3">
-                                                <label class="form-label">Admin Prefix <span class="text-danger">*</span></label>
-                                                <input type="text" name="prefix" id="inquiry_prefix" class="form-control" value="{{ auth()->user()->prefix_number ?? '' }}" required>
-                                                <small class="text-muted">Admin prefix number</small>
+                                                <label class="form-label">Invoice Number / Customer Number <span class="text-danger">*</span></label>
+                                                <input type="text" name="invoice_number" id="inquiry_invoice_number" class="form-control" required>
+                                                <small class="text-muted">
+                                                    Enter full invoice number (prefix+customer+invoice) to get specific invoice, 
+                                                    or just prefix+customer_number to get all invoices for that customer.
+                                                    <br>Example: "345410011000" (full) or "34541001" (all invoices)
+                                                </small>
                                             </div>
                                         </div>
-                                        <div class="col-md-3">
-                                            <div class="form-group mb-3">
-                                                <label class="form-label">Customer Number <span class="text-danger">*</span></label>
-                                                <input type="text" name="customer_number" id="inquiry_customer_number" class="form-control" required>
-                                                <small class="text-muted">Customer number (without prefix)</small>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <div class="form-group mb-3">
-                                                <label class="form-label">Invoice Number (Optional)</label>
-                                                <input type="text" name="invoice_number" id="inquiry_invoice_number" class="form-control">
-                                                <small class="text-muted">Leave empty to get all invoices</small>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-3 d-flex align-items-end">
+                                        <div class="col-md-2 d-flex align-items-end">
                                             <button type="submit" class="btn btn-primary w-100">Search</button>
                                         </div>
                                     </div>
@@ -130,7 +120,10 @@
                                             <div class="form-group mb-3">
                                                 <label class="form-label">Invoice Number <span class="text-danger">*</span></label>
                                                 <input type="text" name="invoice_number" id="payment_invoice_number" class="form-control" required>
-                                                <small class="text-muted">Full invoice number (prefix+customer+invoice)</small>
+                                                <small class="text-muted">
+                                                    Full invoice number (prefix+customer+invoice) or just prefix+customer_number
+                                                    <br>Example: "345410011000" (full) or "34541001" (latest unpaid invoice)
+                                                </small>
                                             </div>
                                         </div>
                                         <div class="col-md-2">
@@ -218,9 +211,7 @@
                 url: '{{ route("api.bill.inquiry") }}',
                 method: 'POST',
                 data: {
-                    prefix: $('#inquiry_prefix').val(),
-                    customer_number: $('#inquiry_customer_number').val(),
-                    invoice_number: $('#inquiry_invoice_number').val() || null,
+                    invoice_number: $('#inquiry_invoice_number').val(),
                     _token: '{{ csrf_token() }}'
                 },
                 success: function(response) {

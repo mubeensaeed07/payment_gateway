@@ -19,17 +19,17 @@ class BillApiController extends Controller
      * Bill Inquiry API
      * 
      * Parameters:
-     * - prefix + customer_number: Returns all invoices for that customer
-     * - prefix + customer_number + invoice_number: Returns specific invoice
+     * - invoice_number: Full invoice number (prefix+customer_number+invoice_sequence) OR just prefix+customer_number
+     *   Examples:
+     *   - Full: "345410011000" (prefix+customer+invoice) → Returns specific invoice
+     *   - Partial: "34541001" (prefix+customer) → Returns all invoices for that customer
      */
     public function inquiry(Request $request)
     {
         // Authentication removed for external API access
 
         $validator = Validator::make($request->all(), [
-            'prefix' => 'required|string',
-            'customer_number' => 'required|string',
-            'invoice_number' => 'nullable|string',
+            'invoice_number' => 'required|string',
         ]);
 
         if ($validator->fails()) {
@@ -40,57 +40,36 @@ class BillApiController extends Controller
             ], 422);
         }
 
-        $prefix = $request->prefix;
-        $customerNumber = $request->customer_number;
-        $invoiceNumber = $request->invoice_number;
+        $inputNumber = $request->invoice_number;
+        $inputLength = strlen($inputNumber);
 
         // Check if invoice number ends with "02" (external provider request)
         $isExternalProvider = false;
-        $originalInvoiceNumber = $invoiceNumber;
+        $originalInvoiceNumber = $inputNumber;
         
-        if ($invoiceNumber && strlen($invoiceNumber) >= 2 && substr($invoiceNumber, -2) === '02') {
+        if ($inputLength >= 2 && substr($inputNumber, -2) === '02') {
             $isExternalProvider = true;
             // Strip "02" from the end
-            $invoiceNumber = substr($invoiceNumber, 0, -2);
+            $inputNumber = substr($inputNumber, 0, -2);
+            $inputLength = strlen($inputNumber);
         }
 
-        // Build customer number with prefix
-        $fullCustomerNumber = $prefix . str_pad($customerNumber, 4, '0', STR_PAD_LEFT);
-
-        // Find customer (search across all admins since we don't have admin_id from auth)
-        $customer = Customer::where('user_number', $fullCustomerNumber)
+        // First, try to find invoice by full invoice number
+        $invoice = Invoice::where('invoice_number', $inputNumber)
+            ->with('customer')
             ->first();
 
-        if (!$customer) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Customer not found'
-            ], 404);
-        }
-
-        // If invoice number provided, get specific invoice
-        if ($invoiceNumber) {
-            $fullInvoiceNumber = $fullCustomerNumber . str_pad($invoiceNumber, 4, '0', STR_PAD_LEFT);
-            
+        if ($invoice) {
+            // Found specific invoice
             // If this is an external provider request, route to their API
             if ($isExternalProvider) {
-                return $this->routeToExternalProvider($customer->admin_id, 'inquiry', [
-                    'prefix' => $prefix,
-                    'customer_number' => $customerNumber,
+                // Extract prefix and customer number from customer.user_number
+                $customerNumber = $invoice->customer->user_number;
+                // Try to extract prefix (first 4 digits) and customer number (rest)
+                // This is a best guess - we'll send what we have
+                return $this->routeToExternalProvider($invoice->admin_id, 'inquiry', [
                     'invoice_number' => $originalInvoiceNumber, // Send original with "02"
                 ]);
-            }
-            
-            $invoice = Invoice::where('customer_id', $customer->id)
-                ->where('invoice_number', $fullInvoiceNumber)
-                ->with('customer')
-                ->first();
-
-            if (!$invoice) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invoice not found'
-                ], 404);
             }
 
             return response()->json([
@@ -112,6 +91,23 @@ class BillApiController extends Controller
                         'description' => $invoice->description,
                     ]
                 ]
+            ]);
+        }
+
+        // If invoice not found, try to find customer by treating input as customer number
+        $customer = Customer::where('user_number', $inputNumber)->first();
+
+        if (!$customer) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invoice or customer not found'
+            ], 404);
+        }
+
+        // If this is an external provider request and we found customer, route to their API
+        if ($isExternalProvider) {
+            return $this->routeToExternalProvider($customer->admin_id, 'inquiry', [
+                'invoice_number' => $originalInvoiceNumber, // Send original with "02"
             ]);
         }
 
@@ -151,7 +147,10 @@ class BillApiController extends Controller
      * Bill Payment API
      * 
      * Parameters:
-     * - invoice_number (full: prefix + customer_number + invoice_number)
+     * - invoice_number: Full invoice number (prefix+customer_number+invoice_sequence) OR just prefix+customer_number
+     *   Examples:
+     *   - Full: "345410011000" (prefix+customer+invoice) → Pays specific invoice
+     *   - Partial: "34541001" (prefix+customer) → Pays latest unpaid invoice for that customer
      * - amount (must match invoice amount)
      * - transaction_id (optional)
      * - payment_date (optional)
@@ -190,16 +189,42 @@ class BillApiController extends Controller
             $invoiceNumber = substr($invoiceNumber, 0, -2);
         }
 
-        // Find invoice
+        // First, try to find invoice by full invoice number (prefix+customer_number+invoice_sequence)
         $invoice = Invoice::where('invoice_number', $invoiceNumber)
             ->with('customer')
             ->first();
 
+        // If invoice not found, try to find customer by treating input as customer number
         if (!$invoice) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invoice not found'
-            ], 404);
+            $customer = Customer::where('user_number', $invoiceNumber)->first();
+            
+            if (!$customer) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invoice or customer not found. Please provide the full invoice number (prefix+customer_number+invoice_sequence) or customer number (prefix+customer_number).'
+                ], 404);
+            }
+
+            // If this is an external provider request and we found customer, route to their API
+            if ($isExternalProvider) {
+                return $this->routeToExternalProvider($customer->admin_id, 'payment', [
+                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                    'amount' => $amount,
+                    'transaction_id' => $request->transaction_id,
+                    'payment_date' => $request->payment_date,
+                    'payment_method' => $request->payment_method,
+                ]);
+            }
+
+            // Get the latest unpaid invoice for this customer
+            $invoice = $customer->getLatestUnpaidInvoice();
+            
+            if (!$invoice) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No unpaid invoice found for this customer.'
+                ], 404);
+            }
         }
 
         // If this is an external provider request, route to their API

@@ -173,6 +173,6 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
 
 // API routes (no authentication required for external access)
 Route::prefix('api')->name('api.')->group(function () {
-    Route::post('/bill/inquiry', [\App\Http\Controllers\Api\BillApiController::class, 'inquiry'])->name('bill.inquiry');
-    Route::post('/bill/payment', [\App\Http\Controllers\Api\BillApiController::class, 'payment'])->name('bill.payment');
+    Route::post('/billinquiry', [\App\Http\Controllers\Api\BillApiController::class, 'inquiry'])->name('bill.inquiry');
+    Route::post('/billpayment', [\App\Http\Controllers\Api\BillApiController::class, 'payment'])->name('bill.payment');
 });
