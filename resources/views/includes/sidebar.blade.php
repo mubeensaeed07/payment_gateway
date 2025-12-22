@@ -50,6 +50,7 @@
                         <ul aria-expanded="false">
                             <li><a href="{{ route('admin.reports.non-paid-invoices') }}">Non Paid Invoices</a></li>
                             <li><a href="{{ route('admin.reports.paid-invoices') }}">Paid Invoices</a></li>
+                            <li><a href="{{ route('admin.reports.api-payments') }}">API Payments</a></li>
                             <li><a href="{{ route('admin.reports.all-invoices') }}">Invoices</a></li>
                         </ul>
                     </li>
@@ -62,7 +63,13 @@
                     <li>
                         <a href="{{ route('admin.logs.index') }}" class="ai-icon" aria-expanded="false">
                             <i class="flaticon-381-list"></i>
-                            <span class="nav-text">Logs</span>
+                            <span class="nav-text">External Provider Logs</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="{{ route('admin.api-logs.index') }}" class="ai-icon" aria-expanded="false">
+                            <i class="flaticon-381-notepad"></i>
+                            <span class="nav-text">API Logs</span>
                         </a>
                     </li>
                 @else

@@ -95,5 +95,43 @@ class ReportsController extends Controller
         
         return view('admin.reports.all-invoices', compact('invoices', 'totalNonPaid', 'totalPaid'));
     }
+    
+    /**
+     * Show API payments report (payments made via API)
+     */
+    public function apiPayments(Request $request)
+    {
+        $adminId = Auth::id();
+        
+        $query = Invoice::where('admin_id', $adminId)
+            ->where('status', 'paid')
+            ->where('paid_via_api', true) // Only payments made via API
+            ->with('customer')
+            ->orderBy('paid_at', 'desc');
+        
+        // Filter by paid date if provided
+        if ($request->filled('date_from')) {
+            $query->whereDate('paid_at', '>=', $request->date_from);
+        }
+        
+        if ($request->filled('date_to')) {
+            $query->whereDate('paid_at', '<=', $request->date_to);
+        }
+        
+        // Calculate totals
+        $totalApiPayments = Invoice::where('admin_id', $adminId)
+            ->where('status', 'paid')
+            ->where('paid_via_api', true)
+            ->count();
+        
+        $totalApiAmount = Invoice::where('admin_id', $adminId)
+            ->where('status', 'paid')
+            ->where('paid_via_api', true)
+            ->sum('amount');
+        
+        $invoices = $query->paginate(15);
+        
+        return view('admin.reports.api-payments', compact('invoices', 'totalApiPayments', 'totalApiAmount'));
+    }
 }
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Helpers\SlabHelper;
 use App\Mail\UserInvitationMail;
 use App\Models\ExternalProvider;
 use App\Models\Slab;
@@ -166,7 +167,25 @@ class SuperAdminController extends Controller
     public function getSlabs($adminId)
     {
         $admin = User::where('role', 'admin')->findOrFail($adminId);
-        $slabs = $admin->slabs;
+        $existingSlabs = $admin->slabs->keyBy('slab_number');
+        
+        // Get fixed slab ranges and 1Link fees
+        $fixedRanges = SlabHelper::getFixedSlabRanges();
+        $fixedFees = SlabHelper::getFixedOnelinkFees();
+        
+        // Build slabs array with fixed ranges and fees
+        $slabs = [];
+        foreach ($fixedRanges as $slabNumber => $range) {
+            $existingSlab = $existingSlabs->get($slabNumber);
+            $slabs[] = [
+                'slab_number' => $slabNumber,
+                'from_amount' => $range['from'],
+                'to_amount' => $range['to'],
+                'label' => $range['label'],
+                'onelink_fee' => $fixedFees[$slabNumber],
+                'charge' => $existingSlab ? $existingSlab->charge : 0,
+            ];
+        }
 
         return response()->json([
             'success' => true,
@@ -176,42 +195,44 @@ class SuperAdminController extends Controller
 
     /**
      * Store or update slabs for an admin
+     * Note: Slab ranges and 1Link fees are fixed, only charge can be set
      */
     public function storeSlabs(Request $request, $adminId)
     {
         $admin = User::where('role', 'admin')->findOrFail($adminId);
 
         $request->validate([
-            'slabs' => 'required|array|min:1|max:6',
-            'slabs.*.slab_number' => 'required|integer|min:1|max:6',
-            'slabs.*.from_amount' => 'required|numeric|min:0',
-            'slabs.*.to_amount' => 'nullable|numeric|min:0',
+            'slabs' => 'required|array|min:1|max:7',
+            'slabs.*.slab_number' => 'required|integer|min:1|max:7',
             'slabs.*.charge' => 'required|numeric|min:0',
         ]);
 
-        // Additional validation: to_amount must be greater than from_amount
-        foreach ($request->slabs as $index => $slab) {
-            if ($slab['to_amount'] !== null && $slab['to_amount'] <= $slab['from_amount']) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Slab " . ($index + 1) . ": To Amount must be greater than From Amount."
-                ], 422);
-            }
-        }
+        // Get fixed ranges and fees
+        $fixedRanges = SlabHelper::getFixedSlabRanges();
+        $fixedFees = SlabHelper::getFixedOnelinkFees();
 
         DB::beginTransaction();
         try {
             // Delete existing slabs for this admin
             Slab::where('admin_id', $adminId)->delete();
 
-            // Create new slabs
+            // Create new slabs with fixed ranges and fees
             foreach ($request->slabs as $slabData) {
+                $slabNumber = $slabData['slab_number'];
+                $range = $fixedRanges[$slabNumber] ?? null;
+                $onelinkFee = $fixedFees[$slabNumber] ?? 0;
+                
+                if (!$range) {
+                    continue; // Skip invalid slab numbers
+                }
+                
                 Slab::create([
                     'admin_id' => $adminId,
-                    'slab_number' => $slabData['slab_number'],
-                    'from_amount' => $slabData['from_amount'],
-                    'to_amount' => $slabData['to_amount'] ?? null,
+                    'slab_number' => $slabNumber,
+                    'from_amount' => $range['from'],
+                    'to_amount' => $range['to'],
                     'charge' => $slabData['charge'],
+                    'onelink_fee' => $onelinkFee,
                 ]);
             }
 

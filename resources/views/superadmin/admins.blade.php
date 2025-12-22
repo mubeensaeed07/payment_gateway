@@ -12,6 +12,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <!-- End - Meta -->
 
     <!-- Start - Favicon icon -->
@@ -169,8 +170,8 @@
                                                             <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#editPrefixModal{{ $user->id }}">
                                                                 Edit Prefix
                                                             </button>
-                                                            <button type="button" class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#manageSlabsModal{{ $user->id }}">
-                                                                Manage Slabs
+                                                            <button type="button" class="btn btn-info btn-sm" data-bs-toggle="modal" data-bs-target="#manageSlabsModal{{ $user->id }}" onclick="setTimeout(function() { if (typeof window.loadSlabs === 'function') { window.loadSlabs({{ $user->id }}); } else { console.error('loadSlabs function not found'); } }, 300);">
+                                                                <i class="fa fa-cog"></i> Manage Slabs
                                                             </button>
                                                             <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#manageExternalProviderModal{{ $user->id }}">
                                                                 External Provider
@@ -221,13 +222,11 @@
                                                             </div>
                                                             <div class="modal-body">
                                                                 <form id="slabsForm{{ $user->id }}">
+                                                                    <div class="alert alert-info">
+                                                                        <strong>Note:</strong> Slab ranges and 1Link fees are fixed. You can only set the Charge for each slab.
+                                                                    </div>
                                                                     <div id="slabsContainer{{ $user->id }}">
                                                                         <!-- Slabs will be loaded here via JavaScript -->
-                                                                    </div>
-                                                                    <div class="mt-3">
-                                                                        <button type="button" class="btn btn-sm btn-success" onclick="addSlab({{ $user->id }})">
-                                                                            <i class="fa fa-plus"></i> Add Slab
-                                                                        </button>
                                                                     </div>
                                                                 </form>
                                                             </div>
@@ -325,14 +324,90 @@
     <script src="/assets/js/custom.js"></script>
     
     <script>
+        // Define functions FIRST, before they are used
+        
+        // Define addSlabRow function globally (must be defined before loadSlabs uses it)
+        window.addSlabRow = function(adminId, slab) {
+            const container = document.getElementById(`slabsContainer${adminId}`);
+            if (!container) {
+                console.error('Container not found in addSlabRow for admin:', adminId);
+                return;
+            }
+            const existingSlabs = container.querySelectorAll('.slab-row').length;
+            const slabIndex = existingSlabs;
+            
+            const fromAmount = slab.from_amount || 0;
+            const toAmount = slab.to_amount !== null && slab.to_amount !== undefined ? slab.to_amount : '';
+            const toAmountDisplay = toAmount === '' ? 'Unlimited' : toAmount.toLocaleString();
+            const label = slab.label || `Slab ${slab.slab_number}`;
+            const onelinkFee = slab.onelink_fee || 0;
+            const charge = slab.charge || 0;
+            const totalCharge = parseFloat(charge) + parseFloat(onelinkFee);
+            
+            const row = document.createElement('div');
+            row.className = 'slab-row mb-3 p-3 border rounded';
+            row.innerHTML = `
+                <div class="row align-items-end">
+                    <div class="col-md-2">
+                        <label class="form-label"><strong>${label}</strong></label>
+                        <input type="hidden" name="slabs[${slabIndex}][slab_number]" value="${slab.slab_number}">
+                        <input type="hidden" name="slabs[${slabIndex}][from_amount]" value="${fromAmount}">
+                        <input type="hidden" name="slabs[${slabIndex}][to_amount]" value="${toAmount}">
+                        <small class="text-muted">${fromAmount.toLocaleString()}${toAmount !== '' ? ' - ' + toAmountDisplay : '+'}</small>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Fee Applied to Aggregator - by 1Link</label>
+                        <input type="text" class="form-control" value="${onelinkFee.toFixed(2)}" readonly style="background-color: #f0f0f0;">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Charge</label>
+                        <input type="number" name="slabs[${slabIndex}][charge]" class="form-control slab-charge" step="0.01" min="0" value="${charge}" required oninput="window.updateTotalCharge(this)">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Total Charge</label>
+                        <input type="text" class="form-control slab-total" value="${totalCharge.toFixed(2)}" readonly style="background-color: #e8f5e9; font-weight: bold;">
+                    </div>
+                </div>
+            `;
+            container.appendChild(row);
+        };
+        
+        // Define updateTotalCharge function globally
+        window.updateTotalCharge = function(input) {
+            const row = input.closest('.slab-row');
+            const chargeInput = row.querySelector('.slab-charge');
+            const totalInput = row.querySelector('.slab-total');
+            
+            // Get 1Link fee from the readonly input in the same row
+            const onelinkFeeRow = row.querySelector('input[readonly]');
+            const onelinkFee = parseFloat(onelinkFeeRow ? onelinkFeeRow.value : 0);
+            const charge = parseFloat(chargeInput.value) || 0;
+            const total = charge + onelinkFee;
+            
+            totalInput.value = total.toFixed(2);
+        };
+
         // Load slabs when modal is opened
         document.addEventListener('DOMContentLoaded', function() {
-            // Add event listener for all manage slabs modals
+            // Add event listener for all manage slabs modals using Bootstrap 5 events
             @foreach($users as $user)
             const manageSlabsModal{{ $user->id }} = document.getElementById('manageSlabsModal{{ $user->id }}');
             if (manageSlabsModal{{ $user->id }}) {
-                manageSlabsModal{{ $user->id }}.addEventListener('show.bs.modal', function() {
-                    loadSlabs({{ $user->id }});
+                // Use shown.bs.modal (after modal is fully shown) for reliability
+                manageSlabsModal{{ $user->id }}.addEventListener('shown.bs.modal', function() {
+                    console.log('Modal shown for admin {{ $user->id }}');
+                    window.loadSlabs({{ $user->id }});
+                });
+            }
+            
+            // Also attach click handler to the button as fallback
+            const manageSlabsBtn{{ $user->id }} = document.querySelector('[data-bs-target="#manageSlabsModal{{ $user->id }}"]');
+            if (manageSlabsBtn{{ $user->id }}) {
+                manageSlabsBtn{{ $user->id }}.addEventListener('click', function() {
+                    // Small delay to ensure modal is ready
+                    setTimeout(function() {
+                        window.loadSlabs({{ $user->id }});
+                    }, 100);
                 });
             }
             
@@ -346,125 +421,93 @@
             @endforeach
         });
 
-        function loadSlabs(adminId) {
+        // Define loadSlabs function globally
+        window.loadSlabs = function(adminId) {
+            console.log('loadSlabs called for admin:', adminId);
+            const container = document.getElementById(`slabsContainer${adminId}`);
+            if (!container) {
+                console.error('Container not found for admin:', adminId, 'Looking for: slabsContainer' + adminId);
+                // Try again after a short delay
+                setTimeout(function() {
+                    const retryContainer = document.getElementById(`slabsContainer${adminId}`);
+                    if (retryContainer) {
+                        console.log('Container found on retry');
+                        window.loadSlabs(adminId);
+                    }
+                }, 500);
+                return;
+            }
+            
+            console.log('Container found, loading slabs...');
+            
+            // Define fixed slabs structure
+            const fixedSlabs = [
+                {slab_number: 1, from_amount: 0, to_amount: 10000, label: 'Up to 10K', onelink_fee: 12.5, charge: 0},
+                {slab_number: 2, from_amount: 10000, to_amount: 100000, label: '10K+ to 100K', onelink_fee: 31.25, charge: 0},
+                {slab_number: 3, from_amount: 100000, to_amount: 250000, label: '100K+ to 250K', onelink_fee: 62.5, charge: 0},
+                {slab_number: 4, from_amount: 250000, to_amount: 1000000, label: '250K+ to 1Mln', onelink_fee: 125, charge: 0},
+                {slab_number: 5, from_amount: 1000000, to_amount: 2500000, label: '1M+ to 2.5M', onelink_fee: 250, charge: 0},
+                {slab_number: 6, from_amount: 2500000, to_amount: 5000000, label: '2.5M+ to 5M', onelink_fee: 375, charge: 0},
+                {slab_number: 7, from_amount: 5000000, to_amount: null, label: '5M+', onelink_fee: 500, charge: 0}
+            ];
+            
+            // First, show all fixed slabs immediately (with default charge 0)
+            container.innerHTML = '';
+            fixedSlabs.forEach((slab, index) => {
+                console.log('Adding slab row:', index + 1, slab);
+                window.addSlabRow(adminId, slab);
+            });
+            
+            console.log('All slabs added, now fetching existing charges...');
+            
+            // Then fetch existing charges from API and update them
             fetch(`{{ url('/superadmin/admins') }}/${adminId}/slabs`, {
                 method: 'GET',
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'application/json',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || ''
                 }
             })
-            .then(response => response.json())
+            .then(response => {
+                console.log('API response status:', response.status);
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
             .then(data => {
-                const container = document.getElementById(`slabsContainer${adminId}`);
-                container.innerHTML = '';
-                
+                console.log('API data received:', data);
+                // Update charges if API returned data
                 if (data.slabs && data.slabs.length > 0) {
-                    data.slabs.forEach(slab => {
-                        addSlabRow(adminId, slab);
+                    data.slabs.forEach(apiSlab => {
+                        const row = container.querySelector(`input[name*="[slab_number]"][value="${apiSlab.slab_number}"]`)?.closest('.slab-row');
+                        if (row) {
+                            const chargeInput = row.querySelector('input[name*="[charge]"]');
+                            const totalInput = row.querySelector('.slab-total');
+                            if (chargeInput) {
+                                chargeInput.value = apiSlab.charge || 0;
+                                // Update total charge
+                                const onelinkFee = parseFloat(apiSlab.onelink_fee || 0);
+                                const charge = parseFloat(apiSlab.charge || 0);
+                                if (totalInput) {
+                                    totalInput.value = (charge + onelinkFee).toFixed(2);
+                                }
+                            }
+                        }
                     });
-                } else {
-                    // Add default 5 slabs
-                    for (let i = 1; i <= 5; i++) {
-                        addSlabRow(adminId, {
-                            slab_number: i,
-                            from_amount: (i - 1) * 10000,
-                            to_amount: i === 5 ? null : i * 10000,
-                            charge: 0
-                        });
-                    }
                 }
             })
             .catch(error => {
-                console.error('Error loading slabs:', error);
-                // Add default 5 slabs on error
-                const container = document.getElementById(`slabsContainer${adminId}`);
-                container.innerHTML = '';
-                for (let i = 1; i <= 5; i++) {
-                    addSlabRow(adminId, {
-                        slab_number: i,
-                        from_amount: (i - 1) * 10000,
-                        to_amount: i === 5 ? null : i * 10000,
-                        charge: 0
-                    });
-                }
+                console.error('Error loading slabs from API:', error);
+                // Slabs are already shown, so we just log the error
             });
-        }
+        };
 
-        function addSlab(adminId) {
-            const container = document.getElementById(`slabsContainer${adminId}`);
-            const existingSlabs = container.querySelectorAll('.slab-row').length;
-            
-            if (existingSlabs >= 6) {
-                alert('Maximum 6 slabs allowed');
-                return;
-            }
-            
-            const slabNumber = existingSlabs + 1;
-            const lastSlab = container.querySelector('.slab-row:last-child');
-            let fromAmount = 0;
-            
-            if (lastSlab) {
-                const lastToAmount = parseFloat(lastSlab.querySelector('input[name*="[to_amount]"]').value) || 0;
-                fromAmount = lastToAmount + 0.01;
-            }
-            
-            addSlabRow(adminId, {
-                slab_number: slabNumber,
-                from_amount: fromAmount,
-                to_amount: null,
-                charge: 0
-            });
-        }
+        // Removed addSlab function - slabs are now fixed
+        // addSlabRow and updateTotalCharge are already defined above
 
-        function addSlabRow(adminId, slab) {
-            const container = document.getElementById(`slabsContainer${adminId}`);
-            const existingSlabs = container.querySelectorAll('.slab-row').length;
-            const slabIndex = existingSlabs;
-            
-            const row = document.createElement('div');
-            row.className = 'slab-row mb-3 p-3 border rounded';
-            row.innerHTML = `
-                <div class="row align-items-end">
-                    <div class="col-md-2">
-                        <label class="form-label">Slab ${slab.slab_number}</label>
-                        <input type="hidden" name="slabs[${slabIndex}][slab_number]" value="${slab.slab_number}">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">From Amount</label>
-                        <input type="number" name="slabs[${slabIndex}][from_amount]" class="form-control" step="0.01" min="0" value="${slab.from_amount || 0}" required>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">To Amount <small class="text-muted">(Leave empty for last slab)</small></label>
-                        <input type="number" name="slabs[${slabIndex}][to_amount]" class="form-control" step="0.01" min="0" value="${slab.to_amount || ''}" ${slab.to_amount === null ? '' : ''}>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Charge</label>
-                        <input type="number" name="slabs[${slabIndex}][charge]" class="form-control" step="0.01" min="0" value="${slab.charge || 0}" required>
-                    </div>
-                    <div class="col-md-1">
-                        <button type="button" class="btn btn-sm btn-danger" onclick="removeSlab(this)">
-                            <i class="fa fa-times"></i>
-                        </button>
-                    </div>
-                </div>
-            `;
-            container.appendChild(row);
-        }
-
-        function removeSlab(button) {
-            const container = button.closest('#slabsContainer' + button.closest('.modal').id.replace('manageSlabsModal', ''));
-            const row = button.closest('.slab-row');
-            row.remove();
-            
-            // Renumber remaining slabs
-            const rows = container.querySelectorAll('.slab-row');
-            rows.forEach((row, index) => {
-                const slabNumber = index + 1;
-                row.querySelector('label').textContent = `Slab ${slabNumber}`;
-                row.querySelector('input[name*="[slab_number]"]').value = slabNumber;
-            });
-        }
+        // Removed removeSlab function - slabs are now fixed and cannot be removed
 
         function saveSlabs(adminId) {
             const container = document.getElementById(`slabsContainer${adminId}`);
@@ -476,24 +519,17 @@
             
             slabRows.forEach((row, index) => {
                 const slabNumberInput = row.querySelector('input[name*="[slab_number]"]');
-                const fromAmountInput = row.querySelector('input[name*="[from_amount]"]');
-                const toAmountInput = row.querySelector('input[name*="[to_amount]"]');
                 const chargeInput = row.querySelector('input[name*="[charge]"]');
                 
-                if (!slabNumberInput || !fromAmountInput || !chargeInput) {
+                if (!slabNumberInput || !chargeInput) {
                     return; // Skip invalid rows
                 }
                 
                 const slabNumber = parseInt(slabNumberInput.value) || (index + 1);
-                const fromAmount = parseFloat(fromAmountInput.value) || 0;
-                const toAmountValue = toAmountInput ? toAmountInput.value.trim() : '';
-                const toAmount = toAmountValue !== '' ? parseFloat(toAmountValue) : null;
                 const charge = parseFloat(chargeInput.value) || 0;
                 
                 slabs.push({
                     slab_number: slabNumber,
-                    from_amount: fromAmount,
-                    to_amount: toAmount,
                     charge: charge
                 });
                 
@@ -505,32 +541,21 @@
                 return;
             }
             
-            // Validate slab numbers are sequential
+            // Validate slab numbers are sequential (1-7)
             const sortedNumbers = Array.from(slabNumbers).sort((a, b) => a - b);
+            if (sortedNumbers.length !== 7) {
+                alert('All 7 slabs must be configured');
+                return;
+            }
             for (let i = 0; i < sortedNumbers.length; i++) {
                 if (sortedNumbers[i] !== i + 1) {
-                    alert('Slab numbers must be sequential starting from 1');
+                    alert('Slab numbers must be sequential from 1 to 7');
                     return;
                 }
             }
             
-            // Validate ranges don't overlap
-            for (let i = 0; i < slabs.length; i++) {
-                for (let j = i + 1; j < slabs.length; j++) {
-                    const slab1 = slabs[i];
-                    const slab2 = slabs[j];
-                    
-                    if (slab1.to_amount !== null && slab2.to_amount !== null) {
-                        if ((slab1.from_amount >= slab2.from_amount && slab1.from_amount < slab2.to_amount) ||
-                            (slab1.to_amount > slab2.from_amount && slab1.to_amount <= slab2.to_amount) ||
-                            (slab2.from_amount >= slab1.from_amount && slab2.from_amount < slab1.to_amount) ||
-                            (slab2.to_amount > slab1.from_amount && slab2.to_amount <= slab1.to_amount)) {
-                            alert('Slab ranges cannot overlap');
-                            return;
-                        }
-                    }
-                }
-            }
+            // No need to validate ranges - they are fixed
+            // Removed overlap validation
             
             fetch(`{{ url('/superadmin/admins') }}/${adminId}/slabs`, {
                 method: 'POST',
@@ -642,4 +667,5 @@
     </script>
 </body>
 </html>
+
 

@@ -14,6 +14,7 @@ class Invoice extends Model
         'invoice_number',
         'amount',
         'charge',
+        'onelink_fee',
         'due_date',
         'expiry_date',
         'amount_after_due_date',
@@ -22,16 +23,19 @@ class Invoice extends Model
         'paid_at',
         'next_payment_due_at',
         'bank',
+        'paid_via_api',
     ];
 
     protected $casts = [
         'amount' => 'decimal:2',
         'charge' => 'decimal:2',
+        'onelink_fee' => 'decimal:2',
         'amount_after_due_date' => 'decimal:2',
         'due_date' => 'date',
         'expiry_date' => 'date',
         'paid_at' => 'datetime',
         'next_payment_due_at' => 'datetime',
+        'paid_via_api' => 'boolean',
     ];
 
     /**

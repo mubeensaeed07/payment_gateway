@@ -13,12 +13,14 @@ class Slab extends Model
         'from_amount',
         'to_amount',
         'charge',
+        'onelink_fee',
     ];
 
     protected $casts = [
         'from_amount' => 'decimal:2',
         'to_amount' => 'decimal:2',
         'charge' => 'decimal:2',
+        'onelink_fee' => 'decimal:2',
     ];
 
     /**

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\ExternalProvider;
 use App\Models\ExternalProviderLog;
+use App\Models\ApiLog;
 use App\Models\Invoice;
 use App\Models\Customer;
 use App\Models\Slab;
@@ -73,7 +74,8 @@ class BillApiController extends Controller
                 );
             }
 
-            return response()->json([
+            // Log internal API call
+            $responseData = [
                 'success' => true,
                 'data' => [
                     'invoice' => [
@@ -82,8 +84,10 @@ class BillApiController extends Controller
                         'customer_number' => $invoice->customer->user_number,
                         'customer_email' => $invoice->customer->email,
                         'amount' => (float)$invoice->amount,
-                        'charge' => (float)($invoice->charge ?? 0),
-                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0)),
+                        'admin_charge' => (float)($invoice->charge ?? 0),
+                        'onelink_fee' => (float)($invoice->onelink_fee ?? 0),
+                        'total_charge' => (float)(($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
+                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
                         'status' => $invoice->status,
                         'due_date' => $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null,
                         'expiry_date' => $invoice->expiry_date ? $invoice->expiry_date->format('Y-m-d') : null,
@@ -92,17 +96,38 @@ class BillApiController extends Controller
                         'description' => $invoice->description,
                     ]
                 ]
-            ]);
+            ];
+
+            $this->logInternalApiRequest(
+                $invoice->admin_id,
+                'inquiry',
+                ['invoice_number' => $inputNumber],
+                $responseData,
+                200,
+                true,
+                null,
+                $invoice->customer->name,
+                $invoice->customer->user_number
+            );
+
+            return response()->json($responseData);
         }
 
         // If invoice not found, try to find customer by treating input as customer number
         $customer = Customer::where('user_number', $inputNumber)->first();
 
         if (!$customer) {
-            return response()->json([
+            $errorResponse = [
                 'success' => false,
                 'message' => 'Invoice or customer not found'
-            ], 404);
+            ];
+            
+            // Try to determine admin_id from input number
+            $adminId = null;
+            // Try to find admin by checking if input matches any admin's prefix pattern
+            // For now, we'll skip logging if we can't determine admin_id
+            
+            return response()->json($errorResponse, 404);
         }
 
         // If this is an external provider request and we found customer, route to their API
@@ -122,7 +147,7 @@ class BillApiController extends Controller
             ->orderBy('created_at', 'desc')
             ->get();
 
-        return response()->json([
+        $responseData = [
             'success' => true,
             'data' => [
                 'customer' => [
@@ -135,8 +160,10 @@ class BillApiController extends Controller
                     return [
                         'invoice_number' => $invoice->invoice_number,
                         'amount' => (float)$invoice->amount,
-                        'charge' => (float)($invoice->charge ?? 0),
-                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0)),
+                        'admin_charge' => (float)($invoice->charge ?? 0),
+                        'onelink_fee' => (float)($invoice->onelink_fee ?? 0),
+                        'total_charge' => (float)(($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
+                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
                         'status' => $invoice->status,
                         'due_date' => $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null,
                         'expiry_date' => $invoice->expiry_date ? $invoice->expiry_date->format('Y-m-d') : null,
@@ -145,7 +172,22 @@ class BillApiController extends Controller
                     ];
                 })
             ]
-        ]);
+        ];
+
+        // Log internal API call
+        $this->logInternalApiRequest(
+            $customer->admin_id,
+            'inquiry',
+            ['invoice_number' => $inputNumber],
+            $responseData,
+            200,
+            true,
+            null,
+            $customer->name,
+            $customer->user_number
+        );
+
+        return response()->json($responseData);
     }
 
     /**
@@ -204,10 +246,14 @@ class BillApiController extends Controller
             $customer = Customer::where('user_number', $invoiceNumber)->first();
             
             if (!$customer) {
-                return response()->json([
+                $errorResponse = [
                     'success' => false,
                     'message' => 'Invoice or customer not found. Please provide the full invoice number (prefix+customer_number+invoice_sequence) or customer number (prefix+customer_number).'
-                ], 404);
+                ];
+                
+                // Try to determine admin_id - skip logging if we can't determine
+                
+                return response()->json($errorResponse, 404);
             }
 
             // If this is an external provider request and we found customer, route to their API
@@ -229,10 +275,25 @@ class BillApiController extends Controller
             $invoice = $customer->getLatestUnpaidInvoice();
             
             if (!$invoice) {
-                return response()->json([
+                $errorResponse = [
                     'success' => false,
                     'message' => 'No unpaid invoice found for this customer.'
-                ], 404);
+                ];
+                
+                // Log failed payment
+                $this->logInternalApiRequest(
+                    $customer->admin_id,
+                    'payment',
+                    $request->all(),
+                    $errorResponse,
+                    404,
+                    false,
+                    'No unpaid invoice found for this customer',
+                    $customer->name,
+                    $customer->user_number
+                );
+                
+                return response()->json($errorResponse, 404);
             }
         }
 
@@ -253,22 +314,44 @@ class BillApiController extends Controller
 
         // Check if already paid
         if ($invoice->status === 'paid') {
-            return response()->json([
+            $errorResponse = [
                 'success' => false,
                 'message' => 'Invoice is already paid'
-            ], 400);
+            ];
+            
+            // Log failed payment
+            $this->logInternalApiRequest(
+                $invoice->admin_id,
+                'payment',
+                $request->all(),
+                $errorResponse,
+                400,
+                false,
+                'Invoice is already paid',
+                $invoice->customer->name,
+                $invoice->customer->user_number
+            );
+            
+            return response()->json($errorResponse, 400);
         }
 
         DB::beginTransaction();
         try {
             $paymentDate = $request->payment_date ? \Carbon\Carbon::parse($request->payment_date) : now();
 
-            // Calculate charge based on slabs if not already set
+            // Calculate charges based on slabs if not already set
             $charge = $invoice->charge ?? 0;
-            if ($charge == 0) {
-                $charge = $this->calculateCharge($invoice->admin_id, $invoice->amount);
-                // Update invoice with calculated charge
-                $invoice->update(['charge' => $charge]);
+            $onelinkFee = $invoice->onelink_fee ?? 0;
+            
+            if ($charge == 0 && $onelinkFee == 0) {
+                $charges = $this->calculateCharges($invoice->admin_id, $invoice->amount);
+                $charge = $charges['admin_charge'];
+                $onelinkFee = $charges['onelink_fee'];
+                // Update invoice with calculated charges
+                $invoice->update([
+                    'charge' => $charge,
+                    'onelink_fee' => $onelinkFee
+                ]);
             }
 
             // Check if payment is after due date and include amount_after_due_date
@@ -284,29 +367,50 @@ class BillApiController extends Controller
                 }
             }
 
-            // Calculate total: invoice amount + charge + due date amount (if applicable)
-            $invoiceTotal = $invoice->amount + $charge + $dueDateAmount;
+            // Calculate total: invoice amount + admin charge + 1Link fee + due date amount (if applicable)
+            $totalCharge = $charge + $onelinkFee;
+            $invoiceTotal = $invoice->amount + $totalCharge + $dueDateAmount;
             
             // Validate amount matches invoice total
             if (abs($amount - $invoiceTotal) > 0.01) {
                 DB::rollBack();
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Payment amount does not match invoice total. Invoice amount: ' . number_format($invoice->amount, 2) . 
-                                ($charge > 0 ? ' + Charge: ' . number_format($charge, 2) : '') . 
+                
+                $errorMessage = 'Payment amount does not match invoice total. Invoice amount: ' . number_format($invoice->amount, 2) . 
+                                ($charge > 0 ? ' + Admin Charge: ' . number_format($charge, 2) : '') . 
+                                ($onelinkFee > 0 ? ' + 1Link Fee: ' . number_format($onelinkFee, 2) : '') . 
                                 ($dueDateAmount > 0 ? ' + After Due Date Amount: ' . number_format($dueDateAmount, 2) : '') .
-                                ' = Total: ' . number_format($invoiceTotal, 2)
-                ], 400);
+                                ' = Total: ' . number_format($invoiceTotal, 2);
+                
+                $errorResponse = [
+                    'success' => false,
+                    'message' => $errorMessage
+                ];
+                
+                // Log failed payment
+                $this->logInternalApiRequest(
+                    $invoice->admin_id,
+                    'payment',
+                    $request->all(),
+                    $errorResponse,
+                    400,
+                    false,
+                    $errorMessage,
+                    $invoice->customer->name,
+                    $invoice->customer->user_number
+                );
+                
+                return response()->json($errorResponse, 400);
             }
 
             // Store bank information from payment_method (API sends payment_method as bank name)
             $bank = $request->payment_method ?? null;
 
-            // Update invoice
+            // Update invoice - mark as paid via API
             $invoice->update([
                 'status' => 'paid',
                 'paid_at' => $paymentDate,
                 'bank' => $bank,
+                'paid_via_api' => true, // Mark that this payment was made via API
             ]);
 
             // Update customer balance to next unpaid invoice (if any)
@@ -318,7 +422,7 @@ class BillApiController extends Controller
 
             DB::commit();
 
-            return response()->json([
+            $responseData = [
                 'success' => true,
                 'message' => 'Payment processed successfully',
                 'data' => [
@@ -327,7 +431,9 @@ class BillApiController extends Controller
                         'customer_name' => $invoice->customer->name,
                         'customer_number' => $invoice->customer->user_number,
                         'amount' => (float)$invoice->amount,
-                        'charge' => (float)$charge,
+                        'admin_charge' => (float)$charge,
+                        'onelink_fee' => (float)$onelinkFee,
+                        'total_charge' => (float)$totalCharge,
                         'due_date_amount' => (float)$dueDateAmount,
                         'total' => (float)$invoiceTotal,
                         'status' => $invoice->status,
@@ -337,27 +443,61 @@ class BillApiController extends Controller
                         'bank' => $bank,
                     ]
                 ]
-            ]);
+            ];
+
+            // Log internal API call
+            $this->logInternalApiRequest(
+                $invoice->admin_id,
+                'payment',
+                $request->all(),
+                $responseData,
+                200,
+                true,
+                null,
+                $invoice->customer->name,
+                $invoice->customer->user_number
+            );
+
+            return response()->json($responseData);
         } catch (\Exception $e) {
             DB::rollBack();
-            return response()->json([
+            
+            $errorResponse = [
                 'success' => false,
                 'message' => 'Payment processing failed: ' . $e->getMessage()
-            ], 500);
+            ];
+            
+            // Log failed payment if we have invoice
+            if (isset($invoice)) {
+                $this->logInternalApiRequest(
+                    $invoice->admin_id,
+                    'payment',
+                    $request->all(),
+                    $errorResponse,
+                    500,
+                    false,
+                    $e->getMessage(),
+                    $invoice->customer->name ?? null,
+                    $invoice->customer->user_number ?? null
+                );
+            }
+            
+            return response()->json($errorResponse, 500);
         }
     }
 
     /**
-     * Calculate charge based on payment amount and admin's slabs
+     * Calculate charges (admin charge + 1Link fee) based on payment amount and admin's slabs
+     * Returns array with 'admin_charge' and 'onelink_fee'
      */
-    private function calculateCharge($adminId, $amount)
+    private function calculateCharges($adminId, $amount)
     {
         $slabs = Slab::where('admin_id', $adminId)
             ->orderBy('slab_number')
             ->get();
 
         if ($slabs->isEmpty()) {
-            return 0; // No slabs configured, no charge
+            return ['admin_charge' => 0, 'onelink_fee' => 0]; // No slabs configured, no charges
         }
 
         // Find the matching slab
@@ -365,13 +505,16 @@ class BillApiController extends Controller
             if ($amount >= $slab->from_amount) {
                 // Check if amount is within this slab's range
                 if ($slab->to_amount === null || $amount <= $slab->to_amount) {
-                    return $slab->charge;
+                    return [
+                        'admin_charge' => $slab->charge ?? 0,
+                        'onelink_fee' => $slab->onelink_fee ?? 0
+                    ];
                 }
             }
         }
 
         // If no matching slab found, return 0
-        return 0;
+        return ['admin_charge' => 0, 'onelink_fee' => 0];
     }
 
     /**
@@ -630,6 +773,32 @@ class BillApiController extends Controller
         } catch (\Exception $e) {
             // Silently fail logging to not break the main flow
             \Log::error('Failed to log external provider request: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Log internal API request (own database)
+     */
+    private function logInternalApiRequest($adminId, $type, $requestData, $responseData, $responseStatus, $isSuccessful, $errorMessage = null, $customerName = null, $customerNumber = null)
+    {
+        try {
+            $invoiceNumber = $requestData['invoice_number'] ?? null;
+            
+            ApiLog::create([
+                'admin_id' => $adminId,
+                'api_type' => $type,
+                'invoice_number' => $invoiceNumber,
+                'customer_name' => $customerName,
+                'customer_number' => $customerNumber,
+                'request_data' => $requestData,
+                'response_data' => $responseData,
+                'response_status' => $responseStatus,
+                'is_successful' => $isSuccessful,
+                'error_message' => $errorMessage,
+            ]);
+        } catch (\Exception $e) {
+            // Silently fail logging to not break the main flow
+            \Log::error('Failed to log internal API request: ' . $e->getMessage());
         }
     }
 }

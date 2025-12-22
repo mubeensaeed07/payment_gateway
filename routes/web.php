@@ -148,6 +148,7 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
         Route::prefix('reports')->name('reports.')->group(function () {
             Route::get('/non-paid-invoices', [\App\Http\Controllers\Admin\ReportsController::class, 'nonPaidInvoices'])->name('non-paid-invoices');
             Route::get('/paid-invoices', [\App\Http\Controllers\Admin\ReportsController::class, 'paidInvoices'])->name('paid-invoices');
+            Route::get('/api-payments', [\App\Http\Controllers\Admin\ReportsController::class, 'apiPayments'])->name('api-payments');
             Route::get('/all-invoices', [\App\Http\Controllers\Admin\ReportsController::class, 'allInvoices'])->name('all-invoices');
         });
         
@@ -156,6 +157,7 @@ Route::middleware(['auth', 'prevent.back'])->group(function () {
         
         // Logs routes
         Route::get('/logs', [\App\Http\Controllers\Admin\AdminLogsController::class, 'index'])->name('logs.index');
+        Route::get('/api-logs', [\App\Http\Controllers\Admin\AdminApiLogsController::class, 'index'])->name('api-logs.index');
     });
 
     // Reseller routes

@@ -191,8 +191,10 @@ class AdminCustomerController extends Controller
                 $invoiceNumber = $customer->user_number . str_pad((string)$invoiceSequence, 4, '0', STR_PAD_LEFT);
             }
 
-            // Calculate charge based on invoice amount and admin's slabs
-            $charge = $this->calculateCharge(Auth::id(), $customer->balance);
+            // Calculate charges based on invoice amount and admin's slabs
+            $charges = $this->calculateCharges(Auth::id(), $customer->balance);
+            $charge = $charges['admin_charge'];
+            $onelinkFee = $charges['onelink_fee'];
 
             $invoice = Invoice::create([
                 'customer_id' => $customer->id,
@@ -201,6 +203,7 @@ class AdminCustomerController extends Controller
                 'invoice_number' => $invoiceNumber,
                 'amount' => $customer->balance,
                 'charge' => $charge,
+                'onelink_fee' => $onelinkFee,
                 'status' => 'pending',
             ]);
 
@@ -295,8 +298,10 @@ class AdminCustomerController extends Controller
                 $invoiceNumber = $customer->user_number . str_pad((string)$invoiceSequence, 4, '0', STR_PAD_LEFT);
             }
 
-            // Calculate charge based on invoice amount and admin's slabs
-            $charge = $this->calculateCharge(Auth::id(), $request->amount);
+            // Calculate charges based on invoice amount and admin's slabs
+            $charges = $this->calculateCharges(Auth::id(), $request->amount);
+            $charge = $charges['admin_charge'];
+            $onelinkFee = $charges['onelink_fee'];
 
             $invoice = Invoice::create([
                 'customer_id' => $customer->id,
@@ -305,6 +310,7 @@ class AdminCustomerController extends Controller
                 'invoice_number' => $invoiceNumber,
                 'amount' => $request->amount,
                 'charge' => $charge,
+                'onelink_fee' => $onelinkFee,
                 'due_date' => $request->due_date,
                 'expiry_date' => $request->expiry_date,
                 'amount_after_due_date' => $request->amount_after_due_date,
@@ -369,16 +375,17 @@ class AdminCustomerController extends Controller
     }
 
     /**
-     * Calculate charge based on payment amount and admin's slabs
+     * Calculate charges (admin charge + 1Link fee) based on payment amount and admin's slabs
+     * Returns array with 'admin_charge' and 'onelink_fee'
      */
-    private function calculateCharge($adminId, $amount)
+    private function calculateCharges($adminId, $amount)
     {
         $slabs = Slab::where('admin_id', $adminId)
             ->orderBy('slab_number')
             ->get();
 
         if ($slabs->isEmpty()) {
-            return 0; // No slabs configured, no charge
+            return ['admin_charge' => 0, 'onelink_fee' => 0]; // No slabs configured, no charges
         }
 
         // Find the matching slab
@@ -386,12 +393,15 @@ class AdminCustomerController extends Controller
             if ($amount >= $slab->from_amount) {
                 // Check if amount is within this slab's range
                 if ($slab->to_amount === null || $amount <= $slab->to_amount) {
-                    return $slab->charge;
+                    return [
+                        'admin_charge' => $slab->charge ?? 0,
+                        'onelink_fee' => $slab->onelink_fee ?? 0
+                    ];
                 }
             }
         }
 
         // If no matching slab found, return 0
-        return 0;
+        return ['admin_charge' => 0, 'onelink_fee' => 0];
     }
 }
