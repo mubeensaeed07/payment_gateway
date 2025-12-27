@@ -47,11 +47,11 @@
                                 <form method="GET" action="{{ route('admin.api-logs.index') }}" class="row g-3">
                                     <div class="col-md-3">
                                         <label class="form-label">From Date</label>
-                                        <input type="date" name="date_from" class="form-control" value="{{ request('date_from') }}">
+                                        <input type="text" name="date_from" class="form-control bs-datepicker" id="date_from" value="{{ request('date_from') }}" placeholder="mm/dd/yyyy" autocomplete="off">
                                     </div>
                                     <div class="col-md-3">
                                         <label class="form-label">To Date</label>
-                                        <input type="date" name="date_to" class="form-control" value="{{ request('date_to') }}">
+                                        <input type="text" name="date_to" class="form-control bs-datepicker" id="date_to" value="{{ request('date_to') }}" placeholder="mm/dd/yyyy" autocomplete="off">
                                     </div>
                                     <div class="col-md-3">
                                         <label class="form-label">Customer Name</label>
@@ -266,12 +266,55 @@
     <script src="/assets/vendor/chart-js/chart.bundle.min.js"></script>
     <script src="/assets/vendor/bootstrap-datetimepicker/js/moment.js"></script>
     <script src="/assets/vendor/bootstrap-datetimepicker/js/bootstrap-datetimepicker.min.js"></script>
+    <script src="/assets/vendor/bootstrap-datepicker/js/bootstrap-datepicker.min.js"></script>
     <script src="/assets/vendor/apexcharts/dist/apexcharts.min.js"></script>
     <script src="/assets/vendor/peity/jquery.peity.min.js"></script>
     <script src="/assets/vendor/i18n/i18n.js"></script>
     <script src="/assets/js/translator.js"></script>
     <script src="/assets/js/deznav-init.js"></script>
     <script src="/assets/js/custom.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Disable Bootstrap datepicker's default data-api behavior that causes issues
+            $(document).off('click.bs.datepicker.data-api', '[data-toggle="datepicker"]');
+            $(document).off('focus.bs.datepicker.data-api', '[data-toggle="datepicker"]');
+            
+            // Wait for custom.js to finish, then reinitialize datepickers properly
+            setTimeout(function() {
+                // Destroy any existing instances
+                $('#date_from, #date_to').each(function() {
+                    var $this = $(this);
+                    if ($this.data('datepicker')) {
+                        $this.datepicker('destroy');
+                    }
+                });
+                
+                // Initialize datepickers with proper configuration
+                $('#date_from, #date_to').datepicker({
+                    format: 'mm/dd/yyyy',
+                    autoclose: true,
+                    todayHighlight: true,
+                    orientation: 'bottom auto'
+                }).on('show', function(e) {
+                    // Prevent event bubbling when datepicker opens
+                    e.stopPropagation();
+                });
+                
+                // Handle clicks outside to close datepicker
+                $(document).on('click', function(e) {
+                    var $target = $(e.target);
+                    // Check if click is on datepicker elements
+                    var isDatepicker = $target.closest('.datepicker, .datepicker-dropdown, .datepicker-days, .datepicker-months, .datepicker-years').length > 0;
+                    var isDateInput = $target.is('#date_from, #date_to') || $target.closest('#date_from, #date_to').length > 0;
+                    
+                    // Only close if click is outside datepicker and not on the input
+                    if (!isDatepicker && !isDateInput) {
+                        $('#date_from, #date_to').datepicker('hide');
+                    }
+                });
+            }, 150);
+        });
+    </script>
 </body>
 </html>
 

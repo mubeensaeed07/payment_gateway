@@ -9,6 +9,7 @@ use App\Models\ApiLog;
 use App\Models\Invoice;
 use App\Models\Customer;
 use App\Models\Slab;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -17,6 +18,69 @@ use Illuminate\Support\Facades\Validator;
 
 class BillApiController extends Controller
 {
+    /**
+     * Parse invoice number to extract prefix, source indicator (01/02), and customer/invoice number
+     * 
+     * Format: [PREFIX][01|02][CUSTOMER_NUMBER/INVOICE_NUMBER]
+     * 
+     * @param string $inputNumber The full input number
+     * @return array|null Returns array with 'admin_id', 'is_external', 'customer_number', 'original_number' or null if no match
+     */
+    private function parseInvoiceNumber($inputNumber)
+    {
+        $inputLength = strlen($inputNumber);
+        
+        // Need at least 5 digits: 3 (min prefix) + 2 (source indicator)
+        if ($inputLength < 5) {
+            return null;
+        }
+
+        // Get all admin prefixes (3, 4, or 5 digits)
+        $admins = User::where('role', 'admin')
+            ->whereNotNull('prefix_number')
+            ->where('prefix_number', '!=', '')
+            ->get(['id', 'prefix_number']);
+
+        // Sort by prefix length (longest first) to match longer prefixes first
+        $admins = $admins->sortByDesc(function ($admin) {
+            return strlen($admin->prefix_number);
+        });
+
+        // Try to match prefix (3, 4, or 5 digits)
+        foreach ($admins as $admin) {
+            $prefix = $admin->prefix_number;
+            $prefixLength = strlen($prefix);
+            
+            // Check if input starts with this prefix
+            if (substr($inputNumber, 0, $prefixLength) === $prefix) {
+                // Check if there are at least 2 more digits after prefix
+                if ($inputLength < $prefixLength + 2) {
+                    continue; // Not enough digits for source indicator
+                }
+
+                // Extract the next 2 digits (source indicator)
+                $sourceIndicator = substr($inputNumber, $prefixLength, 2);
+                
+                // Check if source indicator is "01" or "02"
+                if ($sourceIndicator === '01' || $sourceIndicator === '02') {
+                    // Extract customer/invoice number (remaining digits after prefix + 2)
+                    $customerNumber = substr($inputNumber, $prefixLength + 2);
+                    
+                    return [
+                        'admin_id' => $admin->id,
+                        'is_external' => $sourceIndicator === '02',
+                        'customer_number' => $customerNumber,
+                        'original_number' => $inputNumber,
+                        'prefix' => $prefix,
+                    ];
+                }
+            }
+        }
+
+        // No prefix match found - return null (will be handled as internal request)
+        return null;
+    }
+
     /**
      * Bill Inquiry API
      * 
@@ -43,36 +107,66 @@ class BillApiController extends Controller
         }
 
         $inputNumber = $request->invoice_number;
-        $inputLength = strlen($inputNumber);
-
-        // Check if invoice number ends with "02" (external provider request)
-        $isExternalProvider = false;
         $originalInvoiceNumber = $inputNumber;
+
+        // Parse invoice number to extract prefix, source indicator, and customer number
+        $parsed = $this->parseInvoiceNumber($inputNumber);
         
-        if ($inputLength >= 2 && substr($inputNumber, -2) === '02') {
-            $isExternalProvider = true;
-            // Strip "02" from the end
-            $inputNumber = substr($inputNumber, 0, -2);
-            $inputLength = strlen($inputNumber);
+        $isExternalProvider = false;
+        $adminId = null;
+        $customerNumber = null;
+
+        if ($parsed) {
+            // Prefix matched - use parsed values
+            $isExternalProvider = $parsed['is_external'];
+            $adminId = $parsed['admin_id'];
+            $parsedCustomerNumber = $parsed['customer_number'];
+            $prefix = $parsed['prefix'];
+            
+            // Reconstruct customer number as stored in DB: prefix + customer_number (without source indicator)
+            // Example: "1535021001" -> prefix="1535", source="02", customer="1001" -> DB stores "15351001"
+            $customerNumber = $prefix . $parsedCustomerNumber;
+        } else {
+            // No prefix match - treat as internal request (legacy format or no prefix)
+            // Try to find by full invoice number or customer number
+            $customerNumber = $inputNumber;
+            $adminId = null;
         }
 
-        // First, try to find invoice by full invoice number
-        $invoice = Invoice::where('invoice_number', $inputNumber)
+        // If this is an external provider request, route to their API immediately
+        if ($isExternalProvider && $adminId) {
+            return $this->routeToExternalProvider(
+                $adminId, 
+                'inquiry', 
+                [
+                    'invoice_number' => $originalInvoiceNumber,
+                ]
+            );
+        }
+
+        // Internal request - try to find invoice or customer
+        // First, try to find invoice by full invoice number (legacy format)
+        $invoice = Invoice::where('invoice_number', $customerNumber)
             ->with('customer')
             ->first();
 
+        // If not found and we have admin_id from prefix, try to find by customer number within that admin
+        if (!$invoice && $adminId && $customerNumber) {
+            $customer = Customer::where('admin_id', $adminId)
+                ->where('user_number', $customerNumber)
+                ->first();
+            
+            if ($customer) {
+                // Try to find invoice by customer number + admin prefix format
+                $invoice = Invoice::where('customer_id', $customer->id)
+                    ->with('customer')
+                    ->orderBy('created_at', 'desc')
+                    ->first();
+            }
+        }
+
         if ($invoice) {
             // Found specific invoice
-            // If this is an external provider request, route to their API
-            if ($isExternalProvider) {
-                return $this->routeToExternalProvider(
-                    $invoice->admin_id, 
-                    'inquiry', 
-                    [
-                        'invoice_number' => $originalInvoiceNumber, // Send original with "02"
-                    ]
-                );
-            }
 
             // Log internal API call
             $responseData = [
@@ -113,81 +207,80 @@ class BillApiController extends Controller
             return response()->json($responseData);
         }
 
-        // If invoice not found, try to find customer by treating input as customer number
-        $customer = Customer::where('user_number', $inputNumber)->first();
+        // If invoice not found, try to find customer
+        if (!$invoice && $customerNumber) {
+            if ($adminId) {
+                // Search within specific admin
+                $customer = Customer::where('admin_id', $adminId)
+                    ->where('user_number', $customerNumber)
+                    ->first();
+            } else {
+                // Legacy: search all customers
+                $customer = Customer::where('user_number', $customerNumber)->first();
+            }
+        } else {
+            $customer = null;
+        }
 
-        if (!$customer) {
+        if (!$customer && !$invoice) {
             $errorResponse = [
                 'success' => false,
                 'message' => 'Invoice or customer not found'
             ];
             
-            // Try to determine admin_id from input number
-            $adminId = null;
-            // Try to find admin by checking if input matches any admin's prefix pattern
-            // For now, we'll skip logging if we can't determine admin_id
-            
             return response()->json($errorResponse, 404);
         }
 
-        // If this is an external provider request and we found customer, route to their API
-        if ($isExternalProvider) {
-            return $this->routeToExternalProvider(
-                $customer->admin_id, 
-                'inquiry', 
-                [
-                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+        // If we found customer but no invoice, get all invoices for that customer
+        if ($customer && !$invoice) {
+            // Get all invoices for customer
+            $invoices = Invoice::where('customer_id', $customer->id)
+                ->with('customer')
+                ->orderBy('created_at', 'desc')
+                ->get();
+
+            $responseData = [
+                'success' => true,
+                'data' => [
+                    'customer' => [
+                        'name' => $customer->name,
+                        'email' => $customer->email,
+                        'customer_number' => $customer->user_number,
+                        'reference_id' => $customer->reference_id,
+                    ],
+                    'invoices' => $invoices->map(function ($invoice) {
+                        return [
+                            'invoice_number' => $invoice->invoice_number,
+                            'amount' => (float)$invoice->amount,
+                            'admin_charge' => (float)($invoice->charge ?? 0),
+                            'onelink_fee' => (float)($invoice->onelink_fee ?? 0),
+                            'total_charge' => (float)(($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
+                            'total' => (float)($invoice->amount + ($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
+                            'status' => $invoice->status,
+                            'due_date' => $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null,
+                            'expiry_date' => $invoice->expiry_date ? $invoice->expiry_date->format('Y-m-d') : null,
+                            'paid_at' => $invoice->paid_at ? $invoice->paid_at->format('Y-m-d H:i:s') : null,
+                            'created_at' => $invoice->created_at->format('Y-m-d H:i:s'),
+                        ];
+                    })
                 ]
+            ];
+
+            // Log internal API call
+            $this->logInternalApiRequest(
+                $customer->admin_id,
+                'inquiry',
+                ['invoice_number' => $originalInvoiceNumber],
+                $responseData,
+                200,
+                true,
+                null,
+                $customer->name,
+                $customer->user_number
             );
+
+            return response()->json($responseData);
         }
-
-        // Get all invoices for customer
-        $invoices = Invoice::where('customer_id', $customer->id)
-            ->with('customer')
-            ->orderBy('created_at', 'desc')
-            ->get();
-
-        $responseData = [
-            'success' => true,
-            'data' => [
-                'customer' => [
-                    'name' => $customer->name,
-                    'email' => $customer->email,
-                    'customer_number' => $customer->user_number,
-                    'reference_id' => $customer->reference_id,
-                ],
-                'invoices' => $invoices->map(function ($invoice) {
-                    return [
-                        'invoice_number' => $invoice->invoice_number,
-                        'amount' => (float)$invoice->amount,
-                        'admin_charge' => (float)($invoice->charge ?? 0),
-                        'onelink_fee' => (float)($invoice->onelink_fee ?? 0),
-                        'total_charge' => (float)(($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
-                        'total' => (float)($invoice->amount + ($invoice->charge ?? 0) + ($invoice->onelink_fee ?? 0)),
-                        'status' => $invoice->status,
-                        'due_date' => $invoice->due_date ? $invoice->due_date->format('Y-m-d') : null,
-                        'expiry_date' => $invoice->expiry_date ? $invoice->expiry_date->format('Y-m-d') : null,
-                        'paid_at' => $invoice->paid_at ? $invoice->paid_at->format('Y-m-d H:i:s') : null,
-                        'created_at' => $invoice->created_at->format('Y-m-d H:i:s'),
-                    ];
-                })
-            ]
-        ];
-
-        // Log internal API call
-        $this->logInternalApiRequest(
-            $customer->admin_id,
-            'inquiry',
-            ['invoice_number' => $inputNumber],
-            $responseData,
-            200,
-            true,
-            null,
-            $customer->name,
-            $customer->user_number
-        );
-
-        return response()->json($responseData);
     }
 
     /**
@@ -225,91 +318,105 @@ class BillApiController extends Controller
 
         $invoiceNumber = $request->invoice_number;
         $amount = $request->amount;
-
-        // Check if invoice number ends with "02" (external provider request)
-        $isExternalProvider = false;
         $originalInvoiceNumber = $invoiceNumber;
+
+        // Parse invoice number to extract prefix, source indicator, and customer number
+        $parsed = $this->parseInvoiceNumber($invoiceNumber);
         
-        if (strlen($invoiceNumber) >= 2 && substr($invoiceNumber, -2) === '02') {
-            $isExternalProvider = true;
-            // Strip "02" from the end to get our internal invoice number
-            $invoiceNumber = substr($invoiceNumber, 0, -2);
+        $isExternalProvider = false;
+        $adminId = null;
+        $customerNumber = null;
+
+        if ($parsed) {
+            // Prefix matched - use parsed values
+            $isExternalProvider = $parsed['is_external'];
+            $adminId = $parsed['admin_id'];
+            $parsedCustomerNumber = $parsed['customer_number'];
+            $prefix = $parsed['prefix'];
+            
+            // Reconstruct customer number as stored in DB: prefix + customer_number (without source indicator)
+            // Example: "1535021001" -> prefix="1535", source="02", customer="1001" -> DB stores "15351001"
+            $customerNumber = $prefix . $parsedCustomerNumber;
+        } else {
+            // No prefix match - treat as internal request (legacy format or no prefix)
+            // Try to find by full invoice number or customer number
+            $customerNumber = $invoiceNumber;
+            $adminId = null;
         }
 
-        // First, try to find invoice by full invoice number (prefix+customer_number+invoice_sequence)
-        $invoice = Invoice::where('invoice_number', $invoiceNumber)
-            ->with('customer')
-            ->first();
-
-        // If invoice not found, try to find customer by treating input as customer number
-        if (!$invoice) {
-            $customer = Customer::where('user_number', $invoiceNumber)->first();
-            
-            if (!$customer) {
-                $errorResponse = [
-                    'success' => false,
-                    'message' => 'Invoice or customer not found. Please provide the full invoice number (prefix+customer_number+invoice_sequence) or customer number (prefix+customer_number).'
-                ];
-                
-                // Try to determine admin_id - skip logging if we can't determine
-                
-                return response()->json($errorResponse, 404);
-            }
-
-            // If this is an external provider request and we found customer, route to their API
-            if ($isExternalProvider) {
-                return $this->routeToExternalProvider(
-                    $customer->admin_id, 
-                    'payment', 
-                    [
-                        'invoice_number' => $originalInvoiceNumber, // Send original with "02"
-                        'amount' => $amount,
-                        'transaction_id' => $request->transaction_id,
-                        'payment_date' => $request->payment_date,
-                        'payment_method' => $request->payment_method,
-                    ]
-                );
-            }
-
-            // Get the latest unpaid invoice for this customer
-            $invoice = $customer->getLatestUnpaidInvoice();
-            
-            if (!$invoice) {
-                $errorResponse = [
-                    'success' => false,
-                    'message' => 'No unpaid invoice found for this customer.'
-                ];
-                
-                // Log failed payment
-                $this->logInternalApiRequest(
-                    $customer->admin_id,
-                    'payment',
-                    $request->all(),
-                    $errorResponse,
-                    404,
-                    false,
-                    'No unpaid invoice found for this customer',
-                    $customer->name,
-                    $customer->user_number
-                );
-                
-                return response()->json($errorResponse, 404);
-            }
-        }
-
-        // If this is an external provider request, route to their API
-        if ($isExternalProvider) {
+        // If this is an external provider request, route to their API immediately
+        if ($isExternalProvider && $adminId) {
             return $this->routeToExternalProvider(
-                $invoice->admin_id, 
+                $adminId, 
                 'payment', 
                 [
-                    'invoice_number' => $originalInvoiceNumber, // Send original with "02"
+                    'invoice_number' => $originalInvoiceNumber,
                     'amount' => $amount,
                     'transaction_id' => $request->transaction_id,
                     'payment_date' => $request->payment_date,
                     'payment_method' => $request->payment_method,
                 ]
             );
+        }
+
+        // Internal request - try to find invoice or customer
+        // First, try to find invoice by full invoice number (legacy format)
+        $invoice = Invoice::where('invoice_number', $customerNumber)
+            ->with('customer')
+            ->first();
+
+        // If not found and we have admin_id from prefix, try to find by customer number within that admin
+        if (!$invoice && $adminId && $customerNumber) {
+            $customer = Customer::where('admin_id', $adminId)
+                ->where('user_number', $customerNumber)
+                ->first();
+            
+            if ($customer) {
+                // Get the latest unpaid invoice for this customer
+                $invoice = $customer->getLatestUnpaidInvoice();
+            }
+        }
+
+        // If invoice still not found, try to find customer (legacy format)
+        if (!$invoice && $customerNumber) {
+            if ($adminId) {
+                // Search within specific admin
+                $customer = Customer::where('admin_id', $adminId)
+                    ->where('user_number', $customerNumber)
+                    ->first();
+            } else {
+                // Legacy: search all customers
+                $customer = Customer::where('user_number', $customerNumber)->first();
+            }
+            
+            if ($customer) {
+                // Get the latest unpaid invoice for this customer
+                $invoice = $customer->getLatestUnpaidInvoice();
+            }
+        }
+
+        if (!$invoice) {
+            $errorResponse = [
+                'success' => false,
+                'message' => 'Invoice or customer not found. Please provide the full invoice number (prefix+01/02+customer_number+invoice_sequence) or customer number (prefix+01/02+customer_number).'
+            ];
+            
+            // Try to log if we have admin_id
+            if ($adminId) {
+                $this->logInternalApiRequest(
+                    $adminId,
+                    'payment',
+                    $request->all(),
+                    $errorResponse,
+                    404,
+                    false,
+                    'Invoice or customer not found',
+                    null,
+                    $customerNumber
+                );
+            }
+            
+            return response()->json($errorResponse, 404);
         }
 
         // Check if already paid
@@ -578,16 +685,13 @@ class BillApiController extends Controller
                 $responseCustomerNumber = $extractedInfo['customer_number'] ?? null;
             }
             
-            // If customer number not found in response, try to extract from invoice number (remove "02" suffix)
+            // If customer number not found in response, try to extract from invoice number using prefix matching
             if (!$responseCustomerNumber && isset($data['invoice_number'])) {
                 $invoiceNum = $data['invoice_number'];
-                if (strlen($invoiceNum) >= 2 && substr($invoiceNum, -2) === '02') {
-                    // Remove "02" suffix to get potential customer number
-                    $potentialCustomerNumber = substr($invoiceNum, 0, -2);
-                    // Only use if it looks like a valid customer number (has reasonable length)
-                    if (strlen($potentialCustomerNumber) >= 4) {
-                        $responseCustomerNumber = $potentialCustomerNumber;
-                    }
+                $parsed = $this->parseInvoiceNumber($invoiceNum);
+                if ($parsed && $parsed['is_external']) {
+                    // Use the extracted customer number from prefix matching
+                    $responseCustomerNumber = $parsed['customer_number'];
                 }
             }
             
